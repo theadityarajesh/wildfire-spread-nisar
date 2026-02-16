@@ -16,3 +16,5 @@ __pycache__/
 # Generated outputs
 processed/
 data/
+cache/
+.matplotlib/

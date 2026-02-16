@@ -18,8 +18,10 @@ Date: January 2026
 """
 
 import os
+import re
 import shutil
 import sys
+import zipfile
 import argparse
 import logging
 from datetime import datetime, timedelta
@@ -116,6 +118,10 @@ class Config:
     # NISAR availability date (when it started producing science data)
     NISAR_START_DATE = datetime(2025, 11, 1)
 
+    # Convert SAR backscatter/intensity to dB for model-friendly scaling.
+    SAR_TO_DB = True
+    SAR_DB_EPS = 1e-8
+
 
 # ============================================================================
 # UTILITY FUNCTIONS
@@ -159,6 +165,17 @@ def create_date_list(start_date: datetime, end_date: datetime) -> List[datetime]
         dates.append(current)
         current += timedelta(days=1)
     return dates
+
+
+def resize_nearest_2d(arr: np.ndarray, target_shape: Tuple[int, int]) -> np.ndarray:
+    """Resize 2D array to target shape using nearest-neighbor indexing."""
+    src_h, src_w = arr.shape
+    dst_h, dst_w = target_shape
+    if (src_h, src_w) == (dst_h, dst_w):
+        return arr
+    y_idx = np.linspace(0, src_h - 1, dst_h).round().astype(int)
+    x_idx = np.linspace(0, src_w - 1, dst_w).round().astype(int)
+    return arr[np.ix_(y_idx, x_idx)]
 
 
 def calculate_grid_parameters(
@@ -241,12 +258,23 @@ def download_fire_masks_gee(
         logger.warning("Install geemap for actual downloads: pip install geemap")
 
     try:
-        # Initialize Earth Engine
-        ee.Initialize()
-        logger.info("✓ Earth Engine initialized")
+        # Initialize Earth Engine. Newer setups may require explicit project.
+        ee_project = os.getenv("EARTHENGINE_PROJECT") or os.getenv("EE_PROJECT")
+        if ee_project:
+            ee.Initialize(project=ee_project)
+            logger.info(f"✓ Earth Engine initialized (project={ee_project})")
+        else:
+            ee.Initialize()
+            logger.info("✓ Earth Engine initialized")
     except Exception as e:
         logger.error(f"Failed to initialize Earth Engine: {e}")
         logger.error("Run: earthengine authenticate")
+        logger.error(
+            "If you see 'no project found', set one with: earthengine set_project YOUR_GCP_PROJECT_ID"
+        )
+        logger.error(
+            "Or export EARTHENGINE_PROJECT=YOUR_GCP_PROJECT_ID before running the pipeline"
+        )
         return False
 
     # Create region of interest
@@ -258,6 +286,7 @@ def download_fire_masks_gee(
     viirs = ee.ImageCollection("FIRMS").filterBounds(roi)
 
     fire_masks = []
+    placeholder_days = 0
 
     for date in date_list:
         date_str = date.strftime("%Y-%m-%d")
@@ -283,14 +312,16 @@ def download_fire_masks_gee(
                     f"  Unexpected shape {fire_array.shape} for {date_str}, using placeholder"
                 )
                 fire_array = np.zeros(grid_shape, dtype=np.uint8)
+                placeholder_days += 1
             elif fire_array.shape != grid_shape:
                 logger.warning(
-                    f"  GEE array shape {fire_array.shape} != grid {grid_shape} for {date_str}; using placeholder"
+                    f"  GEE array shape {fire_array.shape} != grid {grid_shape} for {date_str}; resizing to target grid"
                 )
-                fire_array = np.zeros(grid_shape, dtype=np.uint8)
+                fire_array = resize_nearest_2d(fire_array.astype(np.uint8), grid_shape)
             fire_masks.append(fire_array)
         else:
             fire_masks.append(np.zeros(grid_shape, dtype=np.uint8))
+            placeholder_days += 1
 
     if not fire_masks:
         logger.error("No fire mask data collected")
@@ -319,6 +350,9 @@ def download_fire_masks_gee(
 
     logger.info(f"✓ Fire masks saved to {output_path}")
     logger.info(f"  Shape: {fire_da.shape} (time, y, x)")
+    logger.info(
+        f"  Source: GEE FIRMS/VIIRS (placeholder days: {placeholder_days}/{len(date_list)})"
+    )
 
     return True
 
@@ -444,6 +478,41 @@ def should_use_nisar(start_date: datetime) -> bool:
     return start_date >= Config.NISAR_START_DATE
 
 
+def _extract_scene_date(name: str, fallback: datetime) -> str:
+    """Extract YYYY-MM-DD from SAR filename; fallback to provided date."""
+    # Match YYYY-MM-DD
+    m = re.search(r"(20\d{2}-\d{2}-\d{2})", name)
+    if m:
+        return m.group(1)
+    # Match YYYYMMDDT...
+    m = re.search(r"(20\d{2})(\d{2})(\d{2})T\d{6}", name)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    return fallback.strftime("%Y-%m-%d")
+
+
+def _find_raster_files(temp_dir: Path) -> List[Path]:
+    """Find raster files directly or inside downloaded zip archives."""
+    raster_files = list(temp_dir.rglob("*.tif")) + list(temp_dir.rglob("*.tiff"))
+    if raster_files:
+        return raster_files
+
+    zip_files = list(temp_dir.rglob("*.zip"))
+    if not zip_files:
+        return []
+
+    extract_dir = temp_dir / "unzipped"
+    extract_dir.mkdir(exist_ok=True)
+    for zf in zip_files:
+        try:
+            with zipfile.ZipFile(zf, "r") as z:
+                z.extractall(extract_dir / zf.stem)
+        except zipfile.BadZipFile:
+            logger.warning(f"  Could not unzip {zf.name}; skipping")
+
+    return list(extract_dir.rglob("*.tif")) + list(extract_dir.rglob("*.tiff"))
+
+
 def download_sar_data_asf(
     bounds_wgs84: Tuple[float, float, float, float],
     start_date: datetime,
@@ -492,51 +561,85 @@ def download_sar_data_asf(
 
     session = asf.ASFSession().auth_with_token(token.strip())
 
-    # Determine which satellite to use (ASF: dataset + processingLevel per docs)
-    use_nisar = should_use_nisar(start_date)
-
-    if use_nisar:
-        logger.info("  Using NISAR data (available from Nov 2025+)")
-        # NISAR product types: GSLC (Geocoded SLC), GCOV, etc. No RTC in ASF for NISAR yet.
-        dataset = asf.DATASET.NISAR
-        product_type = asf.PRODUCT_TYPE.GSLC  # Geocoded Single Look Complex
-    else:
-        logger.info("  Using Sentinel-1 data (NISAR not available for this date)")
-        # OPERA RTC-S1: analysis-ready RTC from ASF. Use OPERA_S1 + RTC.
-        dataset = asf.DATASET.OPERA_S1
-        product_type = asf.PRODUCT_TYPE.RTC  # OPERA RTC for Sentinel-1
-
     # Create WKT polygon from bounds (ASF requires closed polygon: first vertex = last)
     west, south, east, north = bounds_wgs84
     wkt = f"POLYGON(({west} {south}, {east} {south}, {east} {north}, {west} {north}, {west} {south}))"
 
-    # ASF search accepts start/end as strings (YYYY-MM-DD or natural language)
-    start_str = start_date.strftime("%Y-%m-%d")
-    end_str = end_date.strftime("%Y-%m-%d")
-
     temp_dir = output_path.parent / "temp_sar"
 
     try:
-        # Search for SAR data (dataset= preferred over platform= per ASF docs)
-        logger.info(f"  Searching ASF for {dataset} {product_type} products...")
+        # Inclusive day handling for ASF end date.
+        exact_start = start_date
+        exact_end = end_date + timedelta(days=1)
+        widened_start = start_date - timedelta(days=6)
+        widened_end = end_date + timedelta(days=7)
 
-        results = asf.search(
-            dataset=dataset,
-            processingLevel=product_type,
-            intersectsWith=wkt,
-            start=start_str,
-            end=end_str,
-        )
+        # Search strategy tuned for training utility:
+        # 1) Prefer Sentinel-1 GRD for broad historical coverage and raster compatibility
+        # 2) Widen time window if exact daily range has no acquisition
+        # 3) Fallback to SLC, then OPERA RTC (often HDF5 containers)
+        if should_use_nisar(start_date):
+            logger.info("  Using NISAR-era search strategy")
+            query_plan = [
+                (asf.DATASET.NISAR, asf.PRODUCT_TYPE.GSLC, exact_start, exact_end),
+                (asf.DATASET.NISAR, asf.PRODUCT_TYPE.GSLC, widened_start, widened_end),
+            ]
+        else:
+            logger.info("  Using Sentinel-era search strategy with fallbacks")
+            query_plan = [
+                (asf.DATASET.SENTINEL1, asf.PRODUCT_TYPE.GRD_HD, exact_start, exact_end),
+                (asf.DATASET.SENTINEL1, asf.PRODUCT_TYPE.GRD_HD, widened_start, widened_end),
+                (asf.DATASET.SENTINEL1, asf.PRODUCT_TYPE.SLC, widened_start, widened_end),
+                (asf.DATASET.OPERA_S1, asf.PRODUCT_TYPE.RTC, exact_start, exact_end),
+                (asf.DATASET.OPERA_S1, asf.PRODUCT_TYPE.RTC, widened_start, widened_end),
+            ]
 
-        logger.info(f"  Found {len(results)} SAR scenes")
+        results = None
+        dataset = None
+        product_type = None
+        chosen_window = None
+        for ds_name, prod_name, q_start, q_end in query_plan:
+            logger.info(
+                f"  Searching ASF: dataset={ds_name}, product={prod_name}, window={q_start.date()}..{(q_end - timedelta(days=1)).date()}"
+            )
+            candidate = asf.search(
+                dataset=ds_name,
+                processingLevel=prod_name,
+                intersectsWith=wkt,
+                start=q_start.strftime("%Y-%m-%d"),
+                end=q_end.strftime("%Y-%m-%d"),
+            )
+            logger.info(f"    Found {len(candidate)} scenes")
+            if len(candidate) > 0:
+                results = candidate
+                dataset = ds_name
+                product_type = prod_name
+                chosen_window = (q_start, q_end)
+                break
+
+        if results is None:
+            results = []
 
         if len(results) == 0:
             logger.warning("  No SAR data found for this region/time")
+            logger.info(
+                "  Source: placeholder (all search fallbacks returned 0 scenes)"
+            )
             logger.info("  Creating placeholder satellite.zarr...")
             create_placeholder_sar(
                 grid_shape, grid_transform, target_crs, output_path, start_date
             )
             return True
+
+        logger.info(
+            f"  Using SAR source dataset={dataset}, product={product_type}, scenes={len(results)}"
+        )
+        if chosen_window is not None and (
+            chosen_window[0] != exact_start or chosen_window[1] != exact_end
+        ):
+            logger.info(
+                f"  Note: used widened time window {chosen_window[0].date()}..{(chosen_window[1] - timedelta(days=1)).date()} for scene availability"
+            )
 
         # Session already created above (token or username/password)
 
@@ -546,12 +649,11 @@ def download_sar_data_asf(
         logger.info(f"  Downloading {len(results)} scenes...")
         logger.info(f"  This may take a while (scenes are ~500MB each)")
 
-        # Download files
-        results.download(
-            path=str(temp_dir), session=session, processes=2  # Parallel downloads
-        )
+        # Download files. Use serial mode for stability on local macOS/Python
+        # environments where ASF multiprocessing can terminate unexpectedly.
+        results.download(path=str(temp_dir), session=session, processes=1)
 
-        logger.info("  Download complete, processing RTC products...")
+        logger.info("  Download complete, processing SAR rasters...")
 
         # ================================================================
         # Process downloaded RTC GeoTIFFs
@@ -561,14 +663,14 @@ def download_sar_data_asf(
         # 3. Stack into zarr
         # ================================================================
 
-        sar_arrays = []
-        dates = []
+        sar_by_time = {}
+        detected_bands = set()
 
-        # Find all downloaded GeoTIFFs
-        rtc_files = list(temp_dir.glob("*.tif")) + list(temp_dir.glob("*.tiff"))
+        # Find downloaded GeoTIFFs directly or inside zip archives.
+        rtc_files = sorted(_find_raster_files(temp_dir))
 
         if not rtc_files:
-            logger.warning("  No GeoTIFF files found in download")
+            logger.warning("  No GeoTIFF files found in download payload")
             create_placeholder_sar(
                 grid_shape, grid_transform, target_crs, output_path, start_date
             )
@@ -588,30 +690,54 @@ def download_sar_data_asf(
                 resampling=rasterio.enums.Resampling.bilinear,
             )
 
-            # Extract date from filename (format varies by product)
-            # This is simplified - actual parsing depends on file naming
-            date_str = rtc_file.stem[:10]  # Assumes YYYY-MM-DD in filename
+            # Parse acquisition key + polarization for proper (time, band) stacking.
+            name_low = rtc_file.name.lower()
+            band_match = re.search(r"[-_](vv|vh|hh|hv)[-_]", name_low)
+            band_label = band_match.group(1).upper() if band_match else "B0"
+            detected_bands.add(band_label)
 
-            sar_arrays.append(sar_data.values)
-            dates.append(date_str)
+            ts_match = re.search(r"(20\d{6}t\d{6})", name_low)
+            if ts_match:
+                acquisition_key = ts_match.group(1)
+                date_str = f"{acquisition_key[0:4]}-{acquisition_key[4:6]}-{acquisition_key[6:8]}"
+            else:
+                date_str = _extract_scene_date(rtc_file.name, start_date)
+                acquisition_key = date_str
 
-        # Stack into xarray. Standardize to (time, y, x, band) per pipeline spec.
-        sar_stacked = np.stack(sar_arrays)
+            # For single-band files, extract first band.
+            arr = sar_data.values
+            if arr.ndim == 3:  # (band, y, x)
+                arr = arr[0]
+            arr = arr.astype(np.float32)
+            if Config.SAR_TO_DB:
+                # Sentinel/RTC rasters are typically positive-valued. Convert to dB.
+                arr = np.where(arr > 0, 10.0 * np.log10(arr + Config.SAR_DB_EPS), np.nan)
 
-        if sar_stacked.ndim == 4:  # (time, band, y, x) from rasterio
-            sar_stacked = np.transpose(
-                sar_stacked, (0, 2, 3, 1)
-            )  # -> (time, y, x, band)
-        # else (time, y, x): add band dim for consistency
-        if sar_stacked.ndim == 3:
-            sar_stacked = sar_stacked[:, :, :, np.newaxis]
+            if acquisition_key not in sar_by_time:
+                sar_by_time[acquisition_key] = {"date": date_str, "bands": {}}
+            sar_by_time[acquisition_key]["bands"][band_label] = arr
 
-        n_bands = sar_stacked.shape[-1]
-        band_names = (
-            ["VV", "VH"][:n_bands]
-            if n_bands <= 2
-            else [f"band_{i}" for i in range(n_bands)]
+        if not sar_by_time:
+            logger.warning("  No raster data could be parsed from SAR files")
+            create_placeholder_sar(
+                grid_shape, grid_transform, target_crs, output_path, start_date
+            )
+            return True
+
+        band_names = sorted(detected_bands) if detected_bands else ["B0"]
+        time_keys = sorted(sar_by_time.keys())
+        sar_stacked = np.zeros(
+            (len(time_keys), grid_shape[0], grid_shape[1], len(band_names)),
+            dtype=np.float32,
         )
+        dates = []
+
+        for t_idx, key in enumerate(time_keys):
+            entry = sar_by_time[key]
+            dates.append(entry["date"])
+            for b_idx, b_name in enumerate(band_names):
+                if b_name in entry["bands"]:
+                    sar_stacked[t_idx, :, :, b_idx] = entry["bands"][b_name]
 
         sar_da = xr.DataArray(
             sar_stacked,
@@ -623,6 +749,7 @@ def download_sar_data_asf(
                 "band": band_names,
             },
         )
+        sar_da.attrs["units"] = "dB" if Config.SAR_TO_DB else "linear"
         sar_da.rio.write_crs(target_crs, inplace=True)
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -632,6 +759,9 @@ def download_sar_data_asf(
 
         logger.info(f"✓ SAR data saved to {output_path}")
         logger.info(f"  Shape: {sar_da.shape} (time, y, x, band)")
+        logger.info(
+            f"  Source: ASF real data (dataset={dataset}, product={product_type}, scenes={len(results)})"
+        )
         return True
 
     except Exception as e:
@@ -669,6 +799,7 @@ def create_placeholder_sar(
             "band": ["VV", "VH"],
         },
     )
+    placeholder.attrs["units"] = "dB" if Config.SAR_TO_DB else "linear"
     placeholder.rio.write_crs(target_crs, inplace=True)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -876,6 +1007,12 @@ class WildfireDataProcessor:
         logger.info(
             f"Grid: {self.grid_shape[1]} x {self.grid_shape[0]} pixels @ {Config.TARGET_RESOLUTION}m"
         )
+        logger.info(
+            f"Bounds (WGS84): west={bounds[0]}, south={bounds[1]}, east={bounds[2]}, north={bounds[3]}"
+        )
+        logger.info(
+            f"Unified CRS/grid: {Config.TARGET_CRS} with shared transform for all outputs"
+        )
         logger.info(f"Output: {output_dir}")
         logger.info("=" * 80)
 
@@ -988,7 +1125,7 @@ def main():
         epilog="""
 Examples:
   # Basic usage (credentials from .env)
-  python scripts/data_pipeline.py \\
+  python src/pipeline/data_pipeline.py \\
       --fire-name "park_fire_2024" \\
       --start-date "2024-07-24" \\
       --end-date "2024-08-10" \\
@@ -996,7 +1133,7 @@ Examples:
       --output-dir processed/park_fire_2024
 
   # Camp Fire 2018 example (set EARTHDATA_TOKEN and OPENTOPOGRAPHY_API_KEY in .env)
-  python scripts/data_pipeline.py \\
+  python src/pipeline/data_pipeline.py \\
       --fire-name "camp_fire_2018" \\
       --start-date "2018-11-08" \\
       --end-date "2018-11-21" \\

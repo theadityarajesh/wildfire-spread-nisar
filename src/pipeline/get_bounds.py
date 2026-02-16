@@ -2,8 +2,8 @@
 """Compute bounds for GeoTIFFs in a directory and output unioned bbox.
 
 Examples:
-  python3 scripts/get_bounds.py --input_dir src/data/CampFire_2018
-  python3 scripts/get_bounds.py --input_dir src/data/CampFire_2018 --crs EPSG:4326 --out combined_bounds.json --format geojson
+  python3 src/pipeline/get_bounds.py --input_dir /path/to/fire_tiffs
+  python3 src/pipeline/get_bounds.py --input_dir /path/to/fire_tiffs --crs EPSG:4326 --out combined_bounds.json --format geojson
 
 This writes a GeoJSON bbox polygon by default when `--format geojson` is used.
 """
