@@ -19,11 +19,14 @@ Date: January 2026
 
 import os
 import re
+import json
 import shutil
 import sys
 import zipfile
 import argparse
 import logging
+import time
+import random
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Tuple, List, Optional
@@ -121,6 +124,13 @@ class Config:
     # Convert SAR backscatter/intensity to dB for model-friendly scaling.
     SAR_TO_DB = True
     SAR_DB_EPS = 1e-8
+    # Aggregate multiple same-day SAR acquisitions into one daily slice.
+    # Options: "mean", "median", "max", "none"
+    SAR_DAILY_AGGREGATION = "mean"
+    # Retry policy for transient GridMET service failures.
+    WEATHER_MAX_RETRIES = 3
+    WEATHER_RETRY_BASE_SECONDS = 5.0
+    WEATHER_RETRY_JITTER_SECONDS = 2.0
 
 
 # ============================================================================
@@ -418,13 +428,34 @@ def download_weather_gridmet(
         logger.info(f"  Requesting {len(variables)} variables...")
         logger.info(f"  Date range: {dates[0]} to {dates[1]}")
 
-        # Download data
-        weather_data = pygridmet.get_bygeom(
-            geometry,
-            dates,
-            variables=variables,
-            snow=False,  # Don't need snow parameters
-        )
+        # Download data with retry/backoff for transient service-side failures.
+        weather_data = None
+        last_error = None
+        for attempt in range(1, Config.WEATHER_MAX_RETRIES + 1):
+            try:
+                weather_data = pygridmet.get_bygeom(
+                    geometry,
+                    dates,
+                    variables=variables,
+                    snow=False,  # Don't need snow parameters
+                )
+                break
+            except Exception as e:
+                last_error = e
+                if attempt >= Config.WEATHER_MAX_RETRIES:
+                    raise
+                sleep_s = (
+                    Config.WEATHER_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
+                    + random.uniform(0.0, Config.WEATHER_RETRY_JITTER_SECONDS)
+                )
+                logger.warning(
+                    f"  GridMET attempt {attempt}/{Config.WEATHER_MAX_RETRIES} failed: {e}"
+                )
+                logger.warning(f"  Retrying in {sleep_s:.1f}s...")
+                time.sleep(sleep_s)
+
+        if weather_data is None:
+            raise RuntimeError(f"GridMET download failed: {last_error}")
 
         logger.info(f"  Downloaded {len(weather_data.data_vars)} variables")
 
@@ -725,6 +756,47 @@ def download_sar_data_asf(
             return True
 
         band_names = sorted(detected_bands) if detected_bands else ["B0"]
+
+        agg_method = str(Config.SAR_DAILY_AGGREGATION).lower().strip()
+        if agg_method not in {"none", "mean", "median", "max"}:
+            logger.warning(
+                f"  Unknown SAR_DAILY_AGGREGATION='{Config.SAR_DAILY_AGGREGATION}', defaulting to 'mean'"
+            )
+            agg_method = "mean"
+
+        if agg_method != "none":
+            by_date = {}
+            for entry in sar_by_time.values():
+                date_str = entry["date"]
+                if date_str not in by_date:
+                    by_date[date_str] = {"date": date_str, "bands": {}}
+                for b_name, arr in entry["bands"].items():
+                    by_date[date_str]["bands"].setdefault(b_name, []).append(arr)
+
+            aggregated = {}
+            for date_str, date_entry in by_date.items():
+                aggregated[date_str] = {"date": date_str, "bands": {}}
+                for b_name, arr_list in date_entry["bands"].items():
+                    if len(arr_list) == 1:
+                        aggregated_arr = arr_list[0]
+                    else:
+                        stack = np.stack(arr_list, axis=0)
+                        if agg_method == "mean":
+                            aggregated_arr = np.nanmean(stack, axis=0)
+                        elif agg_method == "median":
+                            aggregated_arr = np.nanmedian(stack, axis=0)
+                        else:  # "max"
+                            aggregated_arr = np.nanmax(stack, axis=0)
+                    aggregated[date_str]["bands"][b_name] = aggregated_arr.astype(
+                        np.float32
+                    )
+
+            logger.info(
+                f"  Applied SAR daily aggregation ({agg_method}): "
+                f"{len(sar_by_time)} acquisitions -> {len(aggregated)} daily timesteps"
+            )
+            sar_by_time = aggregated
+
         time_keys = sorted(sar_by_time.keys())
         sar_stacked = np.zeros(
             (len(time_keys), grid_shape[0], grid_shape[1], len(band_names)),
@@ -986,6 +1058,22 @@ class WildfireDataProcessor:
         # Create output directory
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Persist run configuration for reproducibility and rerun tooling.
+        try:
+            run_config = {
+                "fire_name": fire_name,
+                "start_date": start_date,
+                "end_date": end_date,
+                "bounds": list(bounds),
+                "output_dir": str(self.output_dir),
+                "target_crs": Config.TARGET_CRS,
+                "target_resolution": Config.TARGET_RESOLUTION,
+            }
+            with open(self.output_dir / "run_config.json", "w", encoding="utf-8") as f:
+                json.dump(run_config, f, indent=2)
+        except OSError as e:
+            logger.warning(f"Could not write run_config.json: {e}")
+
         # Calculate grid parameters
         self.bounds_target, self.grid_shape, self.grid_transform = (
             calculate_grid_parameters(
@@ -1016,7 +1104,7 @@ class WildfireDataProcessor:
         logger.info(f"Output: {output_dir}")
         logger.info("=" * 80)
 
-    def process_all(self):
+    def process_all(self) -> bool:
         """
         Run the complete processing pipeline.
 
@@ -1109,6 +1197,7 @@ class WildfireDataProcessor:
             logger.info(f"  {component:15s}: {status}")
         logger.info(f"\nOutput directory: {self.output_dir}")
         logger.info("=" * 80)
+        return all(results.values())
 
 
 # ============================================================================
@@ -1186,7 +1275,8 @@ Environment variables (use .env or export):
         opentopo_api_key=args.opentopo_api_key,
     )
 
-    processor.process_all()
+    ok = processor.process_all()
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":
