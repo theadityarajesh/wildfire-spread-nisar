@@ -119,7 +119,7 @@ class Config:
     BUFFER_DISTANCE = 5000
 
     # NISAR availability date (when it started producing science data)
-    NISAR_START_DATE = datetime(2025, 11, 1)
+    NISAR_START_DATE = datetime(2025, 10, 1)
 
     # Convert SAR backscatter/intensity to dB for model-friendly scaling.
     SAR_TO_DB = True
