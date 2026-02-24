@@ -1,0 +1,8 @@
+# Training stack (install after requirements.txt).
+# Install: pip install -r requirements.txt -r requirements-training.txt
+#
+# NOTE: PyTorch does not yet support Python 3.13. Use Python 3.11 or 3.12 for training:
+#   python3.12 -m venv .venv-train && source .venv-train/bin/activate
+#   pip install -r requirements.txt -r requirements-training.txt
+torch>=2.0
+scikit-learn

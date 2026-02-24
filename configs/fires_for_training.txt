@@ -1,0 +1,5 @@
+# Fire run directories for training (paths relative to --data-root, or absolute).
+# One path per line. Lines starting with # are ignored.
+# Example: after running the data pipeline for camp_fire_2018 and park_fire_2024:
+# camp_fire_2018
+# park_fire_2024

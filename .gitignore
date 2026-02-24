@@ -6,6 +6,7 @@
 *.pyc
 __pycache__/
 .venv/
+.venv-train/
 
 # OS / editors
 .DS_Store
