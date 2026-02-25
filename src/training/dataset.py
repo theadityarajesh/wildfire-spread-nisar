@@ -179,8 +179,19 @@ class WildfireSpreadDataset(Dataset):
             sat_ds = xr.open_zarr(fdir / "satellite.zarr")
             sar_da = sat_ds[SAR_VAR]
             if "time" in sar_da.dims and sar_da.sizes["time"] > 0:
-                # Align SAR to fire time by nearest day
-                sar_da = sar_da.reindex(time=fire_times, method="nearest")
+                # Align SAR to fire time by nearest day.
+                # Some runs store time as strings, so coerce both axes to datetime first.
+                try:
+                    fire_times_dt = np.asarray(fire_times).astype("datetime64[ns]")
+                    sar_times_dt = np.asarray(sar_da["time"].values).astype("datetime64[ns]")
+                    sar_da = sar_da.assign_coords(time=sar_times_dt)
+                    sar_da = sar_da.reindex(time=fire_times_dt, method="nearest")
+                except Exception:
+                    # Fallback: exact string reindex (no nearest on non-datetime labels).
+                    fire_times_str = np.asarray(fire_times).astype(str)
+                    sar_times_str = np.asarray(sar_da["time"].values).astype(str)
+                    sar_da = sar_da.assign_coords(time=sar_times_str)
+                    sar_da = sar_da.reindex(time=fire_times_str)
                 for b in range(sar_da.sizes["band"]):
                     ch = sar_da.isel(time=day_idx, band=b).values
                     channels.append(_normalize_sar(ch))
