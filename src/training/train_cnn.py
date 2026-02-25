@@ -18,17 +18,22 @@ import sys
 from pathlib import Path
 from datetime import datetime
 
+import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from sklearn.metrics import average_precision_score, precision_recall_curve
 
 # Add project root for imports
 _project_root = Path(__file__).resolve().parents[2]
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-from src.models.cnn_spread import build_spread_cnn, FAMILY_A_CHANNELS, FAMILY_B_CHANNELS
+from src.models.cnn_spread import build_spread_cnn
 from src.training.dataset import WildfireSpreadDataset, train_val_test_split
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -41,6 +46,128 @@ def _jsonable_args(args: argparse.Namespace) -> dict:
     for k, v in vars(args).items():
         out[k] = str(v) if isinstance(v, Path) else v
     return out
+
+
+def _flatten_binary(pred: torch.Tensor, target: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
+    """Flatten prediction probabilities and binary targets to 1D NumPy arrays."""
+    pred_np = pred.detach().cpu().numpy().reshape(-1).astype(np.float32)
+    target_np = (target.detach().cpu().numpy().reshape(-1) >= 0.5).astype(np.uint8)
+    return pred_np, target_np
+
+
+def _precision_recall_at_threshold(
+    pred_np: np.ndarray, target_np: np.ndarray, threshold: float = 0.5
+) -> tuple[float, float]:
+    pred_bin = (pred_np >= threshold).astype(np.uint8)
+    tp = int(np.sum((pred_bin == 1) & (target_np == 1)))
+    fp = int(np.sum((pred_bin == 1) & (target_np == 0)))
+    fn = int(np.sum((pred_bin == 0) & (target_np == 1)))
+    precision = tp / (tp + fp + 1e-12)
+    recall = tp / (tp + fn + 1e-12)
+    return float(precision), float(recall)
+
+
+def _compute_auc_pr(pred_np: np.ndarray, target_np: np.ndarray) -> float:
+    """Average precision (AUC-PR); NaN when one class is missing."""
+    n_pos = int(target_np.sum())
+    n_total = int(target_np.size)
+    if n_total == 0 or n_pos == 0 or n_pos == n_total:
+        return float("nan")
+    return float(average_precision_score(target_np, pred_np))
+
+
+def _metric_str(v: float) -> str:
+    return f"{v:.3f}" if np.isfinite(v) else "nan"
+
+
+def _selection_score(metrics: dict) -> float:
+    """Model-selection score: prefer val AUC-PR when defined, else val recall."""
+    auc_pr = float(metrics.get("auc_pr", float("nan")))
+    if np.isfinite(auc_pr):
+        return auc_pr
+    return float(metrics.get("recall", 0.0))
+
+
+def save_training_curves(history: list[dict], out_path: Path) -> None:
+    """Save poster-friendly training curves PNG."""
+    if not history:
+        return
+    epochs = [h["epoch"] for h in history]
+    train_loss = [h["train_loss"] for h in history]
+    val_loss = [h["val_loss"] for h in history]
+    train_prec = [h["train_precision"] for h in history]
+    val_prec = [h["val_precision"] for h in history]
+    train_rec = [h["train_recall"] for h in history]
+    val_rec = [h["val_recall"] for h in history]
+    train_auc = [h["train_auc_pr"] for h in history]
+    val_auc = [h["val_auc_pr"] for h in history]
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+    axes[0].plot(epochs, train_loss, label="Train loss")
+    axes[0].plot(epochs, val_loss, label="Val loss")
+    axes[0].set_title("Loss vs Epoch")
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("BCE loss")
+    axes[0].grid(True, alpha=0.3)
+    axes[0].legend()
+
+    axes[1].plot(epochs, train_prec, label="Train precision@0.5")
+    axes[1].plot(epochs, train_rec, label="Train recall@0.5")
+    axes[1].plot(epochs, val_prec, label="Val precision@0.5")
+    axes[1].plot(epochs, val_rec, label="Val recall@0.5")
+    axes[1].set_title("Precision/Recall vs Epoch")
+    axes[1].set_xlabel("Epoch")
+    axes[1].set_ylabel("Score")
+    axes[1].set_ylim(0.0, 1.0)
+    axes[1].grid(True, alpha=0.3)
+    axes[1].legend()
+
+    axes[2].plot(epochs, train_auc, label="Train AUC-PR")
+    axes[2].plot(epochs, val_auc, label="Val AUC-PR")
+    axes[2].set_title("AUC-PR vs Epoch")
+    axes[2].set_xlabel("Epoch")
+    axes[2].set_ylabel("Average precision")
+    axes[2].set_ylim(0.0, 1.0)
+    axes[2].grid(True, alpha=0.3)
+    axes[2].legend()
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+def save_pr_curve(pred_np: np.ndarray, target_np: np.ndarray, out_path: Path, title: str) -> float:
+    """Save precision-recall curve PNG and return AUC-PR."""
+    auc_pr = _compute_auc_pr(pred_np, target_np)
+    fig, ax = plt.subplots(figsize=(6, 5))
+
+    if np.isfinite(auc_pr):
+        precision, recall, _ = precision_recall_curve(target_np, pred_np)
+        ax.plot(recall, precision, linewidth=2, label=f"PR curve (AUC-PR={auc_pr:.3f})")
+        p05, r05 = _precision_recall_at_threshold(pred_np, target_np, threshold=0.5)
+        ax.scatter([r05], [p05], s=40, label="Threshold=0.5")
+    else:
+        ax.text(
+            0.5,
+            0.5,
+            "AUC-PR undefined\n(one class only in evaluation set)",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+
+    ax.set_title(title)
+    ax.set_xlabel("Recall")
+    ax.set_ylabel("Precision")
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.0)
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="lower left")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    return auc_pr
 
 
 def _load_fire_dirs(data_root: Path, fires_file: Path) -> list[Path]:
@@ -66,15 +193,17 @@ def _load_fire_dirs(data_root: Path, fires_file: Path) -> list[Path]:
 
 
 def compute_metrics(pred: torch.Tensor, target: torch.Tensor, threshold: float = 0.5) -> dict:
-    """Compute precision, recall, and approximate AUC-PR (binary at threshold)."""
-    pred_bin = (pred >= threshold).float()
-    target_bin = (target >= 0.5).float()
-    tp = (pred_bin * target_bin).sum().item()
-    fp = (pred_bin * (1 - target_bin)).sum().item()
-    fn = ((1 - pred_bin) * target_bin).sum().item()
-    prec = tp / (tp + fp + 1e-12)
-    rec = tp / (tp + fn + 1e-12)
-    return {"precision": prec, "recall": rec}
+    """Compute thresholded precision/recall and AUC-PR."""
+    pred_np, target_np = _flatten_binary(pred, target)
+    prec, rec = _precision_recall_at_threshold(pred_np, target_np, threshold=threshold)
+    auc_pr = _compute_auc_pr(pred_np, target_np)
+    return {
+        "precision": prec,
+        "recall": rec,
+        "auc_pr": auc_pr,
+        "target_positive_fraction": float(target_np.mean()) if target_np.size else float("nan"),
+        "pred_positive_fraction": float((pred_np >= threshold).mean()) if pred_np.size else float("nan"),
+    }
 
 
 def train_one_epoch(
@@ -107,7 +236,13 @@ def train_one_epoch(
             all_target.append(y)
     if n == 0 or not all_pred:
         avg_loss = float("nan")
-        metrics = {"precision": 0.0, "recall": 0.0}
+        metrics = {
+            "precision": 0.0,
+            "recall": 0.0,
+            "auc_pr": float("nan"),
+            "target_positive_fraction": float("nan"),
+            "pred_positive_fraction": float("nan"),
+        }
     else:
         avg_loss = total_loss / n
         pred_cat = torch.cat(all_pred, dim=0)
@@ -119,7 +254,12 @@ def train_one_epoch(
 
 
 @torch.no_grad()
-def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> tuple[float, dict]:
+def evaluate(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    return_raw: bool = False,
+) -> tuple[float, dict] | tuple[float, dict, torch.Tensor, torch.Tensor]:
     model.eval()
     total_loss = 0.0
     n = 0
@@ -139,7 +279,15 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> tupl
         all_target.append(y)
     if n == 0 or not all_pred:
         avg_loss = float("nan")
-        metrics = {"precision": 0.0, "recall": 0.0}
+        metrics = {
+            "precision": 0.0,
+            "recall": 0.0,
+            "auc_pr": float("nan"),
+            "target_positive_fraction": float("nan"),
+            "pred_positive_fraction": float("nan"),
+        }
+        pred_cat = torch.empty(0)
+        target_cat = torch.empty(0)
     else:
         avg_loss = total_loss / n
         pred_cat = torch.cat(all_pred, dim=0)
@@ -147,6 +295,8 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> tupl
         metrics = compute_metrics(pred_cat, target_cat)
     if skipped_batches:
         logger.warning("Skipped %d non-finite eval batches", skipped_batches)
+    if return_raw:
+        return avg_loss, metrics, pred_cat, target_cat
     return avg_loss, metrics
 
 
@@ -184,9 +334,16 @@ def main() -> int:
     val_ds = WildfireSpreadDataset(val_dirs, family=args.family, patch_size=args.patch_size)
     test_ds = WildfireSpreadDataset(test_dirs, family=args.family, patch_size=args.patch_size)
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
-    test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
+    pin_memory = torch.cuda.is_available()
+    train_loader = DataLoader(
+        train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0, pin_memory=pin_memory
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=pin_memory
+    )
+    test_loader = DataLoader(
+        test_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=pin_memory
+    )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = build_spread_cnn(family=args.family).to(device)
@@ -198,24 +355,97 @@ def main() -> int:
     with open(out_dir / "config.json", "w") as f:
         json.dump(_jsonable_args(args), f, indent=2)
 
-    best_val_recall = -1.0
+    history: list[dict] = []
+    best_val_score = float("-inf")
     for epoch in range(1, args.epochs + 1):
         train_loss, train_metrics = train_one_epoch(model, train_loader, optimizer, device)
         val_loss, val_metrics = evaluate(model, val_loader, device)
-        logger.info(
-            "Epoch %d  train_loss=%.4f  val_loss=%.4f  val_precision=%.3f  val_recall=%.3f",
-            epoch, train_loss, val_loss, val_metrics["precision"], val_metrics["recall"],
+        history.append(
+            {
+                "epoch": epoch,
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "train_precision": train_metrics["precision"],
+                "train_recall": train_metrics["recall"],
+                "train_auc_pr": train_metrics["auc_pr"],
+                "val_precision": val_metrics["precision"],
+                "val_recall": val_metrics["recall"],
+                "val_auc_pr": val_metrics["auc_pr"],
+                "train_target_positive_fraction": train_metrics["target_positive_fraction"],
+                "train_pred_positive_fraction": train_metrics["pred_positive_fraction"],
+                "val_target_positive_fraction": val_metrics["target_positive_fraction"],
+                "val_pred_positive_fraction": val_metrics["pred_positive_fraction"],
+            }
         )
-        if val_metrics["recall"] > best_val_recall:
-            best_val_recall = val_metrics["recall"]
-            torch.save({"epoch": epoch, "model_state_dict": model.state_dict(), "optimizer_state_dict": optimizer.state_dict()}, out_dir / "best.pt")
-            logger.info("  -> saved best.pt (recall=%.3f)", best_val_recall)
+        logger.info(
+            "Epoch %d  train_loss=%.4f  val_loss=%.4f  "
+            "train_prec=%.3f train_rec=%.3f train_aucpr=%s  "
+            "val_prec=%.3f val_rec=%.3f val_aucpr=%s  "
+            "val_pos=%.4f val_pred_pos=%.4f",
+            epoch,
+            train_loss,
+            val_loss,
+            train_metrics["precision"],
+            train_metrics["recall"],
+            _metric_str(float(train_metrics["auc_pr"])),
+            val_metrics["precision"],
+            val_metrics["recall"],
+            _metric_str(float(val_metrics["auc_pr"])),
+            float(val_metrics["target_positive_fraction"]),
+            float(val_metrics["pred_positive_fraction"]),
+        )
+        current_score = _selection_score(val_metrics)
+        if current_score > best_val_score:
+            best_val_score = current_score
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "best_val_score": best_val_score,
+                },
+                out_dir / "best.pt",
+            )
+            logger.info("  -> saved best.pt (selection_score=%s)", _metric_str(best_val_score))
 
     # Final test set evaluation
     ckpt = torch.load(out_dir / "best.pt", map_location=device)
     model.load_state_dict(ckpt["model_state_dict"])
-    test_loss, test_metrics = evaluate(model, test_loader, device)
-    logger.info("Test: loss=%.4f  precision=%.3f  recall=%.3f", test_loss, test_metrics["precision"], test_metrics["recall"])
+    test_loss, test_metrics, test_pred, test_target = evaluate(model, test_loader, device, return_raw=True)
+    logger.info(
+        "Test: loss=%.4f  precision=%.3f  recall=%.3f  auc_pr=%s",
+        test_loss,
+        test_metrics["precision"],
+        test_metrics["recall"],
+        _metric_str(float(test_metrics["auc_pr"])),
+    )
+
+    # Save plots for poster/report use.
+    save_training_curves(history, out_dir / "training_curves.png")
+    test_pred_np, test_target_np = _flatten_binary(test_pred, test_target)
+    test_auc_pr_plot = save_pr_curve(
+        test_pred_np,
+        test_target_np,
+        out_dir / "test_pr_curve.png",
+        title=f"Test Precision-Recall Curve ({args.family})",
+    )
+
+    history_path = out_dir / "history.json"
+    with open(history_path, "w") as f:
+        json.dump(history, f, indent=2)
+
+    test_metrics = {
+        **test_metrics,
+        "loss": test_loss,
+        "auc_pr_curve_plot": test_auc_pr_plot,
+        "best_epoch": int(ckpt.get("epoch", -1)),
+        "selection_score": float(ckpt.get("best_val_score", float("nan"))),
+        "artifacts": {
+            "training_curves_png": str(out_dir / "training_curves.png"),
+            "test_pr_curve_png": str(out_dir / "test_pr_curve.png"),
+            "history_json": str(history_path),
+        },
+    }
     with open(out_dir / "test_metrics.json", "w") as f:
         json.dump(test_metrics, f, indent=2)
 
