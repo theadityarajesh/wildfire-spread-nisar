@@ -35,6 +35,14 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
+def _jsonable_args(args: argparse.Namespace) -> dict:
+    """Convert argparse values to JSON-serializable types."""
+    out = {}
+    for k, v in vars(args).items():
+        out[k] = str(v) if isinstance(v, Path) else v
+    return out
+
+
 def _load_fire_dirs(data_root: Path, fires_file: Path) -> list[Path]:
     """Load list of fire run directories from a file or directory scan."""
     data_root = Path(data_root)
@@ -167,7 +175,7 @@ def main() -> int:
     out_dir = Path(args.out_dir) / run_name
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "config.json", "w") as f:
-        json.dump(vars(args), f, indent=2)
+        json.dump(_jsonable_args(args), f, indent=2)
 
     best_val_recall = -1.0
     for epoch in range(1, args.epochs + 1):
