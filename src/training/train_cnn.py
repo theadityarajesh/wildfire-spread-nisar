@@ -87,11 +87,16 @@ def train_one_epoch(
     total_loss = 0.0
     n = 0
     all_pred, all_target = [], []
+    skipped_batches = 0
     for x, y in loader:
         x, y = x.to(device), y.to(device)
         optimizer.zero_grad()
         logits = model(x)
         loss = F.binary_cross_entropy_with_logits(logits, y)
+        if not torch.isfinite(loss):
+            skipped_batches += 1
+            logger.warning("Skipping non-finite training batch loss: %s", loss.detach().cpu().item())
+            continue
         loss.backward()
         optimizer.step()
         total_loss += loss.item() * x.size(0)
@@ -100,10 +105,16 @@ def train_one_epoch(
             pred = torch.sigmoid(logits)
             all_pred.append(pred)
             all_target.append(y)
-    avg_loss = total_loss / max(n, 1)
-    pred_cat = torch.cat(all_pred, dim=0)
-    target_cat = torch.cat(all_target, dim=0)
-    metrics = compute_metrics(pred_cat, target_cat)
+    if n == 0 or not all_pred:
+        avg_loss = float("nan")
+        metrics = {"precision": 0.0, "recall": 0.0}
+    else:
+        avg_loss = total_loss / n
+        pred_cat = torch.cat(all_pred, dim=0)
+        target_cat = torch.cat(all_target, dim=0)
+        metrics = compute_metrics(pred_cat, target_cat)
+    if skipped_batches:
+        logger.warning("Skipped %d non-finite training batches this epoch", skipped_batches)
     return avg_loss, metrics
 
 
@@ -113,19 +124,29 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> tupl
     total_loss = 0.0
     n = 0
     all_pred, all_target = [], []
+    skipped_batches = 0
     for x, y in loader:
         x, y = x.to(device), y.to(device)
         logits = model(x)
         loss = F.binary_cross_entropy_with_logits(logits, y)
+        if not torch.isfinite(loss):
+            skipped_batches += 1
+            continue
         total_loss += loss.item() * x.size(0)
         n += x.size(0)
         pred = torch.sigmoid(logits)
         all_pred.append(pred)
         all_target.append(y)
-    avg_loss = total_loss / max(n, 1)
-    pred_cat = torch.cat(all_pred, dim=0)
-    target_cat = torch.cat(all_target, dim=0)
-    metrics = compute_metrics(pred_cat, target_cat)
+    if n == 0 or not all_pred:
+        avg_loss = float("nan")
+        metrics = {"precision": 0.0, "recall": 0.0}
+    else:
+        avg_loss = total_loss / n
+        pred_cat = torch.cat(all_pred, dim=0)
+        target_cat = torch.cat(all_target, dim=0)
+        metrics = compute_metrics(pred_cat, target_cat)
+    if skipped_batches:
+        logger.warning("Skipped %d non-finite eval batches", skipped_batches)
     return avg_loss, metrics
 
 

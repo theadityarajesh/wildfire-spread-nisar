@@ -59,7 +59,7 @@ def _normalize_weather(arr: np.ndarray, var: str) -> np.ndarray:
         out = (out - 180) / 180
     else:
         out = np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
-    return out
+    return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 def _normalize_static(arr: np.ndarray, var: str) -> np.ndarray:
@@ -74,7 +74,7 @@ def _normalize_static(arr: np.ndarray, var: str) -> np.ndarray:
         out = out / 90
     elif var == "aspect":
         out = (out % 360) / 360
-    return out
+    return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 def _normalize_sar(arr: np.ndarray) -> np.ndarray:
@@ -219,6 +219,11 @@ class WildfireSpreadDataset(Dataset):
                 x, label = x_pad, label_pad
             else:
                 x, label = x_crop, label_crop
+
+        # Final safety net: model inputs/targets must be finite.
+        x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+        label = np.nan_to_num(label, nan=0.0, posinf=0.0, neginf=0.0)
+        label = np.clip(label, 0.0, 1.0)
 
         return (
             torch.from_numpy(x).float(),
