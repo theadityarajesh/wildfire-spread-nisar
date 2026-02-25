@@ -196,20 +196,29 @@ class WildfireSpreadDataset(Dataset):
         fire_idx, day_idx = self.samples[idx]
         x, label, (h, w) = self._load_fire_day(fire_idx, day_idx, include_sar=(self.family == "B"))
 
-        if self.patch_size is not None and (h >= self.patch_size and w >= self.patch_size):
-            # Random crop
-            top = np.random.randint(0, h - self.patch_size + 1)
-            left = np.random.randint(0, w - self.patch_size + 1)
-            x = x[:, top : top + self.patch_size, left : left + self.patch_size]
-            label = label[top : top + self.patch_size, left : left + self.patch_size]
-        elif self.patch_size is not None:
-            # Pad to patch_size
+        if self.patch_size is not None:
             ph, pw = self.patch_size, self.patch_size
-            x_pad = np.zeros((x.shape[0], ph, pw), dtype=np.float32)
-            label_pad = np.zeros((ph, pw), dtype=np.float32)
-            x_pad[:, :h, :w] = x
-            label_pad[:h, :w] = label
-            x, label = x_pad, label_pad
+
+            # Handle each dimension independently:
+            # - if larger than patch: random crop
+            # - if smaller than patch: keep full extent, then pad
+            top = np.random.randint(0, h - ph + 1) if h > ph else 0
+            left = np.random.randint(0, w - pw + 1) if w > pw else 0
+            bottom = min(top + ph, h)
+            right = min(left + pw, w)
+
+            x_crop = x[:, top:bottom, left:right]
+            label_crop = label[top:bottom, left:right]
+
+            if x_crop.shape[1] != ph or x_crop.shape[2] != pw:
+                x_pad = np.zeros((x.shape[0], ph, pw), dtype=np.float32)
+                label_pad = np.zeros((ph, pw), dtype=np.float32)
+                ch, cw = x_crop.shape[1], x_crop.shape[2]
+                x_pad[:, :ch, :cw] = x_crop
+                label_pad[:ch, :cw] = label_crop
+                x, label = x_pad, label_pad
+            else:
+                x, label = x_crop, label_crop
 
         return (
             torch.from_numpy(x).float(),
