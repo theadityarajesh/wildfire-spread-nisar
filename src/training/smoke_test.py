@@ -82,7 +82,11 @@ def main() -> int:
         fire_dirs = [tmp]
 
         from src.training.dataset import WildfireSpreadDataset
-        from src.models.cnn_spread import build_spread_cnn
+        from src.models.cnn_spread import (
+            build_spread_cnn,
+            FAMILY_A_CHANNELS,
+            FAMILY_B_CHANNELS,
+        )
         import torch
 
         # Dataset
@@ -91,14 +95,14 @@ def main() -> int:
             assert len(ds) >= 1, f"Family {fam}: expected at least 1 sample"
             x, y = ds[0]
             assert x.dim() == 3 and y.dim() == 3
-            c = 11 if fam == "A" else 13
+            c = FAMILY_A_CHANNELS if fam == "A" else FAMILY_B_CHANNELS
             assert x.shape[0] == c, f"Family {fam}: expected {c} channels, got {x.shape[0]}"
             print(f"  Dataset Family {fam}: {len(ds)} samples, sample shape x={x.shape} y={y.shape}")
 
         # Model forward
         for fam in ("A", "B"):
             model = build_spread_cnn(family=fam)
-            c = 11 if fam == "A" else 13
+            c = FAMILY_A_CHANNELS if fam == "A" else FAMILY_B_CHANNELS
             x = torch.randn(2, c, 16, 16)
             out = model(x)
             assert out.shape == (2, 1, 16, 16), f"Family {fam}: expected (2,1,16,16), got {out.shape}"

@@ -15,7 +15,7 @@ import torch.nn as nn
 
 # Channel counts matching dataset.py
 FAMILY_A_CHANNELS = 11   # fire_mask(1) + weather(7) + elevation, slope, aspect(3)
-FAMILY_B_CHANNELS = 13   # Family A + VV, VH (2)
+FAMILY_B_CHANNELS = 15   # Family A + VV, VH + SAR availability + SAR age
 
 
 class ConvBlock(nn.Module):
@@ -40,7 +40,7 @@ class SpreadCNN(nn.Module):
     """
     Small U-Net-style CNN for binary next-day spread prediction.
 
-    - in_channels: 11 for Family A (no SAR), 13 for Family B (+ SAR).
+    - in_channels: 11 for Family A (no SAR), 15 for Family B (+ SAR + reliability channels).
     - Preserves spatial size (same H, W in and out) for arbitrary patch/grid sizes.
     """
 

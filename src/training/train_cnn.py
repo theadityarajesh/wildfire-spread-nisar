@@ -24,7 +24,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from sklearn.metrics import average_precision_score, precision_recall_curve
 
@@ -206,10 +205,41 @@ def compute_metrics(pred: torch.Tensor, target: torch.Tensor, threshold: float =
     }
 
 
+def estimate_pos_weight(dataset: WildfireSpreadDataset, max_samples: int = 64) -> float:
+    """
+    Estimate BCE positive-class weight from a subset of training samples.
+
+    pos_weight ~= negatives / positives. Returns 1.0 if estimate is unstable.
+    """
+    n = len(dataset)
+    if n == 0:
+        return 1.0
+    sample_n = max(1, min(max_samples, n))
+    if sample_n == n:
+        indices = np.arange(n)
+    else:
+        indices = np.linspace(0, n - 1, num=sample_n).round().astype(int)
+
+    pos = 0.0
+    total = 0.0
+    for idx in indices:
+        _, y = dataset[int(idx)]
+        y_np = y.numpy()
+        pos += float(np.sum(y_np >= 0.5))
+        total += float(y_np.size)
+
+    neg = max(total - pos, 0.0)
+    if pos <= 0.0:
+        return 1.0
+    # Clamp to avoid extreme instability from tiny positive rates.
+    return float(np.clip(neg / pos, 1.0, 50.0))
+
+
 def train_one_epoch(
     model: nn.Module,
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
+    criterion: nn.Module,
     device: torch.device,
 ) -> tuple[float, dict]:
     model.train()
@@ -221,7 +251,7 @@ def train_one_epoch(
         x, y = x.to(device), y.to(device)
         optimizer.zero_grad()
         logits = model(x)
-        loss = F.binary_cross_entropy_with_logits(logits, y)
+        loss = criterion(logits, y)
         if not torch.isfinite(loss):
             skipped_batches += 1
             logger.warning("Skipping non-finite training batch loss: %s", loss.detach().cpu().item())
@@ -257,6 +287,7 @@ def train_one_epoch(
 def evaluate(
     model: nn.Module,
     loader: DataLoader,
+    criterion: nn.Module,
     device: torch.device,
     return_raw: bool = False,
 ) -> tuple[float, dict] | tuple[float, dict, torch.Tensor, torch.Tensor]:
@@ -268,7 +299,7 @@ def evaluate(
     for x, y in loader:
         x, y = x.to(device), y.to(device)
         logits = model(x)
-        loss = F.binary_cross_entropy_with_logits(logits, y)
+        loss = criterion(logits, y)
         if not torch.isfinite(loss):
             skipped_batches += 1
             continue
@@ -312,6 +343,10 @@ def main() -> int:
     parser.add_argument("--train-frac", type=float, default=0.8)
     parser.add_argument("--val-frac", type=float, default=0.1)
     parser.add_argument("--test-frac", type=float, default=0.1)
+    parser.add_argument("--sar-max-gap-days", type=int, default=2, help="Max day gap for nearest SAR match in Family B")
+    parser.add_argument("--no-pos-weight", action="store_true", help="Disable class-weighted BCE loss")
+    parser.add_argument("--pos-weight", type=float, default=None, help="Manual BCE positive-class weight (default: auto-estimate)")
+    parser.add_argument("--pos-weight-samples", type=int, default=64, help="Samples used to auto-estimate pos_weight")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out-dir", type=Path, default=Path("experiments"), help="Base dir for run outputs")
     parser.add_argument("--run-name", type=str, default=None, help="Run name (default: family_A_YYYYMMDD_HHMMSS)")
@@ -330,9 +365,24 @@ def main() -> int:
     )
     logger.info("Fires: train=%d val=%d test=%d", len(train_dirs), len(val_dirs), len(test_dirs))
 
-    train_ds = WildfireSpreadDataset(train_dirs, family=args.family, patch_size=args.patch_size)
-    val_ds = WildfireSpreadDataset(val_dirs, family=args.family, patch_size=args.patch_size)
-    test_ds = WildfireSpreadDataset(test_dirs, family=args.family, patch_size=args.patch_size)
+    train_ds = WildfireSpreadDataset(
+        train_dirs,
+        family=args.family,
+        patch_size=args.patch_size,
+        sar_max_gap_days=args.sar_max_gap_days,
+    )
+    val_ds = WildfireSpreadDataset(
+        val_dirs,
+        family=args.family,
+        patch_size=args.patch_size,
+        sar_max_gap_days=args.sar_max_gap_days,
+    )
+    test_ds = WildfireSpreadDataset(
+        test_dirs,
+        family=args.family,
+        patch_size=args.patch_size,
+        sar_max_gap_days=args.sar_max_gap_days,
+    )
 
     pin_memory = torch.cuda.is_available()
     train_loader = DataLoader(
@@ -348,6 +398,18 @@ def main() -> int:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = build_spread_cnn(family=args.family).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    if args.no_pos_weight:
+        criterion = nn.BCEWithLogitsLoss()
+        logger.info("Loss: unweighted BCEWithLogitsLoss")
+    else:
+        if args.pos_weight is None:
+            pos_weight_value = estimate_pos_weight(train_ds, max_samples=args.pos_weight_samples)
+            logger.info("Loss: auto-estimated pos_weight=%.3f from %d samples", pos_weight_value, args.pos_weight_samples)
+        else:
+            pos_weight_value = float(args.pos_weight)
+            logger.info("Loss: using manual pos_weight=%.3f", pos_weight_value)
+        pos_weight_tensor = torch.tensor([pos_weight_value], dtype=torch.float32, device=device)
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
 
     run_name = args.run_name or f"family_{args.family}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     out_dir = Path(args.out_dir) / run_name
@@ -358,8 +420,8 @@ def main() -> int:
     history: list[dict] = []
     best_val_score = float("-inf")
     for epoch in range(1, args.epochs + 1):
-        train_loss, train_metrics = train_one_epoch(model, train_loader, optimizer, device)
-        val_loss, val_metrics = evaluate(model, val_loader, device)
+        train_loss, train_metrics = train_one_epoch(model, train_loader, optimizer, criterion, device)
+        val_loss, val_metrics = evaluate(model, val_loader, criterion, device)
         history.append(
             {
                 "epoch": epoch,
@@ -411,7 +473,9 @@ def main() -> int:
     # Final test set evaluation
     ckpt = torch.load(out_dir / "best.pt", map_location=device)
     model.load_state_dict(ckpt["model_state_dict"])
-    test_loss, test_metrics, test_pred, test_target = evaluate(model, test_loader, device, return_raw=True)
+    test_loss, test_metrics, test_pred, test_target = evaluate(
+        model, test_loader, criterion, device, return_raw=True
+    )
     logger.info(
         "Test: loss=%.4f  precision=%.3f  recall=%.3f  auc_pr=%s",
         test_loss,

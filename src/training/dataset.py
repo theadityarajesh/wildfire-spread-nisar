@@ -27,7 +27,10 @@ SAR_VAR = "sar_backscatter"
 STATIC_VARS = ["elevation", "slope", "aspect"]
 
 FAMILY_A_CHANNELS = 1 + len(WEATHER_VARS) + len(STATIC_VARS)  # 11
-FAMILY_B_CHANNELS = FAMILY_A_CHANNELS + 2  # VV, VH -> 13
+# Family B adds SAR VV/VH plus two reliability channels:
+# - sar_available: 1 when SAR is within max temporal gap, else 0
+# - sar_age_norm: days-to-nearest-SAR normalized by max gap in [0, 1]
+FAMILY_B_CHANNELS = FAMILY_A_CHANNELS + 4  # 15
 
 
 def _normalize_fire(mask: np.ndarray) -> np.ndarray:
@@ -86,6 +89,11 @@ def _normalize_sar(arr: np.ndarray) -> np.ndarray:
     return out
 
 
+def _to_datetime64_ns(values: np.ndarray) -> np.ndarray:
+    """Best-effort conversion of coordinate values to datetime64[ns]."""
+    return np.asarray(values).astype("datetime64[ns]")
+
+
 class WildfireSpreadDataset(Dataset):
     """
     Load (input_t, label_t+1) from a list of processed fire directories.
@@ -97,6 +105,8 @@ class WildfireSpreadDataset(Dataset):
     - patch_size: if set, each __getitem__ returns a random (patch_size, patch_size) crop;
       otherwise returns full grid (can be huge; use only for small grids).
     - fire_dirs: list of paths to processed fire run directories.
+    - sar_max_gap_days: maximum day-gap for nearest SAR match; beyond this SAR is treated missing.
+    - include_sar_aux: include SAR reliability channels (availability + normalized age) for Family B.
     """
 
     def __init__(
@@ -104,10 +114,14 @@ class WildfireSpreadDataset(Dataset):
         fire_dirs: List[Path],
         family: Literal["A", "B"] = "A",
         patch_size: Optional[int] = 128,
+        sar_max_gap_days: int = 2,
+        include_sar_aux: bool = True,
     ) -> None:
         self.fire_dirs = [Path(d) for d in fire_dirs]
         self.family = family.upper()
         self.patch_size = patch_size
+        self.sar_max_gap_days = max(0, int(sar_max_gap_days))
+        self.include_sar_aux = bool(include_sar_aux)
 
         # Build list of (fire_idx, day_idx) for which we have day_idx+1
         self.samples: List[Tuple[int, int]] = []
@@ -178,26 +192,75 @@ class WildfireSpreadDataset(Dataset):
         if include_sar:
             sat_ds = xr.open_zarr(fdir / "satellite.zarr")
             sar_da = sat_ds[SAR_VAR]
+            vv = np.zeros((h, w), dtype=np.float32)
+            vh = np.zeros((h, w), dtype=np.float32)
+            sar_available = np.zeros((h, w), dtype=np.float32)
+            sar_age_norm = np.ones((h, w), dtype=np.float32)
+
+            sar_t = None
+            has_sar = False
+            age_days = float(self.sar_max_gap_days if self.sar_max_gap_days > 0 else 0)
+
             if "time" in sar_da.dims and sar_da.sizes["time"] > 0:
-                # Align SAR to fire time by nearest day.
-                # Some runs store time as strings, so coerce both axes to datetime first.
+                # Prefer datetime nearest-neighbor matching with max temporal gap.
                 try:
-                    fire_times_dt = np.asarray(fire_times).astype("datetime64[ns]")
-                    sar_times_dt = np.asarray(sar_da["time"].values).astype("datetime64[ns]")
-                    sar_da = sar_da.assign_coords(time=sar_times_dt)
-                    sar_da = sar_da.reindex(time=fire_times_dt, method="nearest")
+                    fire_times_dt = _to_datetime64_ns(fire_times)
+                    sar_times_dt = _to_datetime64_ns(sar_da["time"].values)
+                    fire_t = fire_times_dt[day_idx]
+                    valid_idx = np.where(~np.isnat(sar_times_dt))[0]
+                    if not np.isnat(fire_t) and valid_idx.size > 0:
+                        diffs_h = np.abs(
+                            (sar_times_dt[valid_idx] - fire_t).astype("timedelta64[h]").astype(np.int64)
+                        )
+                        nearest_local = int(np.argmin(diffs_h))
+                        nearest_idx = int(valid_idx[nearest_local])
+                        age_days = float(diffs_h[nearest_local]) / 24.0
+                        if self.sar_max_gap_days <= 0 or age_days <= float(self.sar_max_gap_days):
+                            sar_t = sar_da.isel(time=nearest_idx)
+                            has_sar = True
                 except Exception:
-                    # Fallback: exact string reindex (no nearest on non-datetime labels).
-                    fire_times_str = np.asarray(fire_times).astype(str)
+                    # Fallback: exact string match only.
+                    fire_t_str = str(np.asarray(fire_times).astype(str)[day_idx])
                     sar_times_str = np.asarray(sar_da["time"].values).astype(str)
-                    sar_da = sar_da.assign_coords(time=sar_times_str)
-                    sar_da = sar_da.reindex(time=fire_times_str)
-                for b in range(sar_da.sizes["band"]):
-                    ch = sar_da.isel(time=day_idx, band=b).values
-                    channels.append(_normalize_sar(ch))
+                    matches = np.where(sar_times_str == fire_t_str)[0]
+                    if matches.size > 0:
+                        sar_t = sar_da.isel(time=int(matches[0]))
+                        has_sar = True
+                        age_days = 0.0
+
+            if has_sar and sar_t is not None:
+                if "band" in sar_t.dims and sar_t.sizes.get("band", 0) > 0:
+                    band_labels = [str(b).upper() for b in np.asarray(sar_t["band"].values)]
+
+                    def _pick_band(name: str, fallback_idx: int) -> np.ndarray | None:
+                        if name in band_labels:
+                            idx = band_labels.index(name)
+                        elif sar_t.sizes["band"] > fallback_idx:
+                            idx = fallback_idx
+                        else:
+                            return None
+                        return _normalize_sar(sar_t.isel(band=idx).values)
+
+                    vv_arr = _pick_band("VV", 0)
+                    vh_arr = _pick_band("VH", 1)
+                    if vv_arr is not None:
+                        vv = vv_arr
+                    if vh_arr is not None:
+                        vh = vh_arr
+                else:
+                    arr2d = np.asarray(sar_t.values)
+                    if arr2d.ndim == 2:
+                        vv = _normalize_sar(arr2d)
+                sar_available.fill(1.0)
+
+            if self.sar_max_gap_days > 0:
+                sar_age_norm.fill(min(age_days, float(self.sar_max_gap_days)) / float(self.sar_max_gap_days))
             else:
-                for _ in range(2):
-                    channels.append(np.zeros((h, w), dtype=np.float32))
+                sar_age_norm.fill(0.0 if has_sar else 1.0)
+
+            channels.extend([vv, vh])
+            if self.include_sar_aux:
+                channels.extend([sar_available, sar_age_norm])
             sat_ds.close()
 
         x = np.stack(channels, axis=0).astype(np.float32)
