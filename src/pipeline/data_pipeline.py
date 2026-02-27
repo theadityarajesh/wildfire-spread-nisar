@@ -106,11 +106,21 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 
+def _auto_utm_epsg(lon: float, lat: float) -> str:
+    """Return the EPSG code for the UTM zone that contains (lon, lat)."""
+    zone_number = int((lon + 180) / 6) + 1
+    if lat >= 0:
+        return f"EPSG:326{zone_number:02d}"
+    return f"EPSG:327{zone_number:02d}"
+
+
 class Config:
     """Configuration constants for the pipeline."""
 
-    # Spatial reference system (UTM Zone 10N for California)
-    TARGET_CRS = "EPSG:32610"
+    # Default spatial reference system (UTM Zone 10N for California).
+    # When TARGET_CRS is "auto", the pipeline will pick the correct UTM zone
+    # based on the centroid of the fire bounding box.
+    TARGET_CRS = "auto"
 
     # Grid resolution in meters
     TARGET_RESOLUTION = 500
@@ -486,6 +496,187 @@ def download_weather_gridmet(
         logger.error(f"Failed to download weather data: {e}")
         logger.exception("Full traceback:")
         return False
+
+
+def _is_conus(bounds_wgs84: Tuple[float, float, float, float]) -> bool:
+    """Check if a WGS84 bounding box lies within the contiguous US."""
+    west, south, east, north = bounds_wgs84
+    return west >= -125 and east <= -66 and south >= 24 and north <= 50
+
+
+def download_weather_openmeteo(
+    bounds_wgs84: Tuple[float, float, float, float],
+    start_date: datetime,
+    end_date: datetime,
+    grid_shape: Tuple[int, int],
+    grid_transform: object,
+    target_crs: str,
+    output_path: Path,
+) -> bool:
+    """
+    Download weather data from Open-Meteo (global, free, no API key).
+
+    Queries the Open-Meteo Historical Weather API at the bounding-box centroid
+    and broadcasts the daily timeseries uniformly across the target grid.
+    This is acceptable because weather variables change slowly over the spatial
+    extent of a single fire (~10-50 km), while the model mainly needs the
+    temporal signal.
+
+    Returns True if successful, False otherwise.
+    """
+    logger.info("Downloading weather data from Open-Meteo (global fallback)...")
+
+    if not check_library("requests", "HTTP requests"):
+        return False
+
+    import requests as _requests
+
+    west, south, east, north = bounds_wgs84
+    lat = (south + north) / 2
+    lon = (west + east) / 2
+
+    daily_vars = [
+        "precipitation_sum",
+        "temperature_2m_min",
+        "temperature_2m_max",
+        "wind_speed_10m_max",
+        "wind_direction_10m_dominant",
+    ]
+    hourly_vars = ["relative_humidity_2m"]
+
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "start_date": start_date.strftime("%Y-%m-%d"),
+        "end_date": end_date.strftime("%Y-%m-%d"),
+        "daily": ",".join(daily_vars),
+        "hourly": ",".join(hourly_vars),
+        "timezone": "UTC",
+    }
+
+    try:
+        resp = _requests.get(
+            "https://archive-api.open-meteo.com/v1/archive",
+            params=params,
+            timeout=120,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        daily = data.get("daily", {})
+        hourly = data.get("hourly", {})
+
+        times = [
+            np.datetime64(d) for d in daily.get("time", [])
+        ]
+        n_times = len(times)
+        if n_times == 0:
+            logger.error("Open-Meteo returned no daily data")
+            return False
+
+        height, width = grid_shape
+
+        def _broadcast(values: list) -> np.ndarray:
+            arr = np.array(values, dtype=np.float32)
+            arr = np.nan_to_num(arr, nan=0.0)
+            return np.broadcast_to(arr[:, None, None], (n_times, height, width)).copy()
+
+        pr = _broadcast(daily.get("precipitation_sum", [0.0] * n_times))
+
+        tmmn_c = daily.get("temperature_2m_min", [0.0] * n_times)
+        tmmn = _broadcast([t + 273.15 for t in tmmn_c])
+
+        tmmx_c = daily.get("temperature_2m_max", [0.0] * n_times)
+        tmmx = _broadcast([t + 273.15 for t in tmmx_c])
+
+        vs = _broadcast(daily.get("wind_speed_10m_max", [0.0] * n_times))
+        th = _broadcast(daily.get("wind_direction_10m_dominant", [0.0] * n_times))
+
+        # Compute daily rmax / rmin from hourly relative_humidity_2m.
+        hourly_rh = hourly.get("relative_humidity_2m", [])
+        hourly_times = hourly.get("time", [])
+        if hourly_rh and hourly_times:
+            rh_by_day: dict[str, list[float]] = {}
+            for t_str, rh_val in zip(hourly_times, hourly_rh):
+                day = t_str[:10]
+                if rh_val is not None:
+                    rh_by_day.setdefault(day, []).append(float(rh_val))
+            rmax_list = []
+            rmin_list = []
+            for d in daily.get("time", []):
+                vals = rh_by_day.get(d, [50.0])
+                rmax_list.append(max(vals))
+                rmin_list.append(min(vals))
+        else:
+            rmax_list = [50.0] * n_times
+            rmin_list = [30.0] * n_times
+        rmax = _broadcast(rmax_list)
+        rmin = _broadcast(rmin_list)
+
+        coords = {
+            "time": np.array(times),
+            "y": np.arange(height),
+            "x": np.arange(width),
+        }
+
+        ds = xr.Dataset(
+            {
+                "pr": (["time", "y", "x"], pr),
+                "tmmn": (["time", "y", "x"], tmmn),
+                "tmmx": (["time", "y", "x"], tmmx),
+                "vs": (["time", "y", "x"], vs),
+                "th": (["time", "y", "x"], th),
+                "rmax": (["time", "y", "x"], rmax),
+                "rmin": (["time", "y", "x"], rmin),
+            },
+            coords=coords,
+        )
+        ds = ds.rio.write_crs(target_crs)
+        ds = ds.rio.write_transform(grid_transform)
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        ds.to_zarr(output_path, mode="w", consolidated=True)
+
+        logger.info(f"✓ Weather data saved to {output_path} (Open-Meteo)")
+        logger.info(f"  Variables: {list(ds.data_vars)}")
+        logger.info(f"  Shape: {dict(ds.dims)}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to download weather from Open-Meteo: {e}")
+        logger.exception("Full traceback:")
+        return False
+
+
+def download_weather(
+    bounds_wgs84: Tuple[float, float, float, float],
+    start_date: datetime,
+    end_date: datetime,
+    grid_shape: Tuple[int, int],
+    grid_transform: object,
+    target_crs: str,
+    output_path: Path,
+) -> bool:
+    """
+    Download weather data, choosing the best available source.
+
+    Uses GridMET for fires within the contiguous US (higher resolution),
+    falls back to Open-Meteo for fires anywhere else in the world.
+    """
+    if _is_conus(bounds_wgs84) and LIBRARIES_AVAILABLE.get("pygridmet", False):
+        logger.info("Fire is within CONUS - using GridMET")
+        ok = download_weather_gridmet(
+            bounds_wgs84, start_date, end_date,
+            grid_shape, grid_transform, target_crs, output_path,
+        )
+        if ok:
+            return True
+        logger.warning("GridMET failed, falling back to Open-Meteo...")
+
+    return download_weather_openmeteo(
+        bounds_wgs84, start_date, end_date,
+        grid_shape, grid_transform, target_crs, output_path,
+    )
 
 
 # ============================================================================
@@ -1055,6 +1246,15 @@ class WildfireDataProcessor:
         self.output_dir = Path(output_dir)
         self.opentopo_api_key = opentopo_api_key
 
+        # Resolve CRS: "auto" -> pick UTM zone from bounding-box centroid.
+        if Config.TARGET_CRS.lower() == "auto":
+            centroid_lon = (bounds[0] + bounds[2]) / 2
+            centroid_lat = (bounds[1] + bounds[3]) / 2
+            self.target_crs = _auto_utm_epsg(centroid_lon, centroid_lat)
+            logger.info(f"Auto-detected CRS: {self.target_crs}")
+        else:
+            self.target_crs = Config.TARGET_CRS
+
         # Create output directory
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1066,7 +1266,7 @@ class WildfireDataProcessor:
                 "end_date": end_date,
                 "bounds": list(bounds),
                 "output_dir": str(self.output_dir),
-                "target_crs": Config.TARGET_CRS,
+                "target_crs": self.target_crs,
                 "target_resolution": Config.TARGET_RESOLUTION,
             }
             with open(self.output_dir / "run_config.json", "w", encoding="utf-8") as f:
@@ -1078,7 +1278,7 @@ class WildfireDataProcessor:
         self.bounds_target, self.grid_shape, self.grid_transform = (
             calculate_grid_parameters(
                 bounds,
-                Config.TARGET_CRS,
+                self.target_crs,
                 Config.TARGET_RESOLUTION,
                 Config.BUFFER_DISTANCE,
             )
@@ -1099,7 +1299,7 @@ class WildfireDataProcessor:
             f"Bounds (WGS84): west={bounds[0]}, south={bounds[1]}, east={bounds[2]}, north={bounds[3]}"
         )
         logger.info(
-            f"Unified CRS/grid: {Config.TARGET_CRS} with shared transform for all outputs"
+            f"Unified CRS/grid: {self.target_crs} with shared transform for all outputs"
         )
         logger.info(f"Output: {output_dir}")
         logger.info("=" * 80)
@@ -1134,23 +1334,23 @@ class WildfireDataProcessor:
                 self.date_list,
                 self.grid_shape,
                 self.grid_transform,
-                Config.TARGET_CRS,
+                self.target_crs,
                 self.output_dir / "fire_masks.zarr",
             )
         except Exception as e:
             logger.error(f"Fire mask processing failed: {e}")
 
-        # Process weather
+        # Process weather (GridMET for CONUS, Open-Meteo fallback for global)
         logger.info("\n[2/4] WEATHER DATA")
         logger.info("-" * 80)
         try:
-            results["weather"] = download_weather_gridmet(
+            results["weather"] = download_weather(
                 self.bounds_wgs84,
                 self.start_date,
                 self.end_date,
                 self.grid_shape,
                 self.grid_transform,
-                Config.TARGET_CRS,
+                self.target_crs,
                 self.output_dir / "weather.zarr",
             )
         except Exception as e:
@@ -1166,7 +1366,7 @@ class WildfireDataProcessor:
                 self.end_date,
                 self.grid_shape,
                 self.grid_transform,
-                Config.TARGET_CRS,
+                self.target_crs,
                 self.output_dir / "satellite.zarr",
             )
         except Exception as e:
@@ -1180,7 +1380,7 @@ class WildfireDataProcessor:
                 self.bounds_wgs84,
                 self.grid_shape,
                 self.grid_transform,
-                Config.TARGET_CRS,
+                self.target_crs,
                 self.output_dir / "static.zarr",
                 self.opentopo_api_key,
             )
@@ -1263,8 +1463,15 @@ Environment variables (use .env or export):
         "--opentopo-api-key",
         help="OpenTopography API key (or set OPENTOPOGRAPHY_API_KEY)",
     )
+    parser.add_argument(
+        "--target-crs",
+        default="auto",
+        help='Target CRS (default: "auto" picks UTM zone from bounds centroid)',
+    )
 
     args = parser.parse_args()
+
+    Config.TARGET_CRS = args.target_crs
 
     processor = WildfireDataProcessor(
         fire_name=args.fire_name,
