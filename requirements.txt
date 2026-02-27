@@ -10,3 +10,4 @@ geemap
 asf-search
 requests
 zarr
+h5py

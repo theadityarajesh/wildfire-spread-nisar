@@ -713,11 +713,171 @@ def _extract_scene_date(name: str, fallback: datetime) -> str:
     return fallback.strftime("%Y-%m-%d")
 
 
+def _process_nisar_h5(
+    h5_path: Path,
+    grid_shape: Tuple[int, int],
+    grid_transform: object,
+    target_crs: str,
+) -> dict:
+    """
+    Extract SAR bands from a NISAR HDF5 product (GCOV or GSLC).
+
+    NISAR GCOV HDF5 structure (typical):
+        /science/LSAR/GCOV/grids/frequencyA/
+            HHHH, HVHV, VVVV, VHVH  (covariance diagonals = power)
+
+    NISAR GSLC HDF5 structure (typical):
+        /science/LSAR/GSLC/grids/frequencyA/
+            HH, HV, VH, VV  (complex SLC - we take magnitude squared)
+
+    Returns dict of {band_label: 2D numpy array} reprojected to target grid,
+    or empty dict on failure.
+    """
+    try:
+        import h5py
+    except ImportError:
+        logger.warning("  h5py not installed - cannot read NISAR HDF5. pip install h5py")
+        return {}
+
+    bands = {}
+    try:
+        with h5py.File(h5_path, "r") as f:
+            # Discover structure
+            logger.info(f"    HDF5 top-level groups: {list(f.keys())}")
+
+            # Try GCOV paths first (real-valued power = backscatter intensity)
+            gcov_base = None
+            for path_prefix in [
+                "science/LSAR/GCOV/grids/frequencyA",
+                "science/LSAR/GCOV/grids/frequencyB",
+                "GCOV/grids/frequencyA",
+            ]:
+                if path_prefix in f:
+                    gcov_base = f[path_prefix]
+                    logger.info(f"    Found GCOV at {path_prefix}")
+                    break
+
+            if gcov_base is not None:
+                # GCOV diagonal elements: HHHH~HH power, VVVV~VV power
+                pol_map = {"HHHH": "HH", "VVVV": "VV", "HVHV": "HV", "VHVH": "VH"}
+                for h5_name, band_label in pol_map.items():
+                    if h5_name in gcov_base:
+                        arr = np.array(gcov_base[h5_name], dtype=np.float32)
+                        if arr.ndim >= 2:
+                            if arr.ndim > 2:
+                                arr = arr[0]
+                            arr = _reproject_array(arr, h5_path, grid_shape, grid_transform, target_crs)
+                            if Config.SAR_TO_DB:
+                                arr = np.where(arr > 0, 10.0 * np.log10(arr + Config.SAR_DB_EPS), np.nan)
+                            bands[band_label] = arr
+                            logger.info(f"    Extracted GCOV {h5_name} -> {band_label}")
+                if bands:
+                    return bands
+
+            # Try GSLC paths (complex-valued SLC - take magnitude squared)
+            gslc_base = None
+            for path_prefix in [
+                "science/LSAR/GSLC/grids/frequencyA",
+                "science/LSAR/GSLC/grids/frequencyB",
+                "GSLC/grids/frequencyA",
+            ]:
+                if path_prefix in f:
+                    gslc_base = f[path_prefix]
+                    logger.info(f"    Found GSLC at {path_prefix}")
+                    break
+
+            if gslc_base is not None:
+                for pol in ["HH", "HV", "VH", "VV"]:
+                    if pol in gslc_base:
+                        raw = np.array(gslc_base[pol])
+                        if np.iscomplexobj(raw):
+                            arr = np.abs(raw).astype(np.float32) ** 2
+                        else:
+                            arr = raw.astype(np.float32)
+                        if arr.ndim > 2:
+                            arr = arr[0]
+                        arr = _reproject_array(arr, h5_path, grid_shape, grid_transform, target_crs)
+                        if Config.SAR_TO_DB:
+                            arr = np.where(arr > 0, 10.0 * np.log10(arr + Config.SAR_DB_EPS), np.nan)
+                        bands[pol] = arr
+                        logger.info(f"    Extracted GSLC {pol}")
+                if bands:
+                    return bands
+
+            # Fallback: walk HDF5 for any 2D dataset that looks like SAR
+            logger.info("    Standard NISAR paths not found, scanning HDF5 structure...")
+            _h5_walk_for_sar(f, bands, grid_shape, grid_transform, target_crs)
+
+    except Exception as e:
+        logger.error(f"    Failed to read NISAR HDF5: {e}")
+        logger.exception("    Full traceback:")
+
+    return bands
+
+
+def _reproject_array(
+    arr: np.ndarray,
+    source_path: Path,
+    grid_shape: Tuple[int, int],
+    grid_transform: object,
+    target_crs: str,
+) -> np.ndarray:
+    """Reproject a 2D array to the target grid using nearest-neighbor."""
+    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+    if arr.shape == tuple(grid_shape):
+        return arr
+    return resize_nearest_2d(arr, grid_shape)
+
+
+def _h5_walk_for_sar(f, bands: dict, grid_shape, grid_transform, target_crs, max_bands=2):
+    """Walk HDF5 file to find large 2D datasets that look like SAR backscatter."""
+    candidates = []
+
+    def visitor(name, obj):
+        if isinstance(obj, type(f["/" if "/" in f else list(f.keys())[0]])):
+            return
+        try:
+            if hasattr(obj, "shape") and len(obj.shape) == 2:
+                h, w = obj.shape
+                if h > 100 and w > 100:
+                    candidates.append((name, h, w))
+        except Exception:
+            pass
+
+    try:
+        f.visititems(visitor)
+    except Exception:
+        pass
+
+    candidates.sort(key=lambda x: x[1] * x[2], reverse=True)
+    for i, (name, h, w) in enumerate(candidates[:max_bands]):
+        try:
+            arr = np.array(f[name], dtype=np.float32)
+            if np.iscomplexobj(arr):
+                arr = np.abs(arr).astype(np.float32) ** 2
+            arr = resize_nearest_2d(arr, grid_shape)
+            if Config.SAR_TO_DB:
+                arr = np.where(arr > 0, 10.0 * np.log10(arr + Config.SAR_DB_EPS), np.nan)
+            band_label = f"B{i}"
+            bands[band_label] = arr
+            logger.info(f"    Found 2D dataset {name} ({h}x{w}) -> {band_label}")
+        except Exception as e:
+            logger.warning(f"    Could not read {name}: {e}")
+
+
 def _find_raster_files(temp_dir: Path) -> List[Path]:
-    """Find raster files directly or inside downloaded zip archives."""
-    raster_files = list(temp_dir.rglob("*.tif")) + list(temp_dir.rglob("*.tiff"))
+    """Find raster files (GeoTIFF or HDF5) directly or inside archives."""
+    raster_files = (
+        list(temp_dir.rglob("*.tif"))
+        + list(temp_dir.rglob("*.tiff"))
+    )
     if raster_files:
         return raster_files
+
+    # Check for HDF5 files (NISAR products)
+    h5_files = list(temp_dir.rglob("*.h5")) + list(temp_dir.rglob("*.hdf5"))
+    if h5_files:
+        return h5_files
 
     zip_files = list(temp_dir.rglob("*.zip"))
     if not zip_files:
@@ -732,7 +892,13 @@ def _find_raster_files(temp_dir: Path) -> List[Path]:
         except zipfile.BadZipFile:
             logger.warning(f"  Could not unzip {zf.name}; skipping")
 
-    return list(extract_dir.rglob("*.tif")) + list(extract_dir.rglob("*.tiff"))
+    found = (
+        list(extract_dir.rglob("*.tif"))
+        + list(extract_dir.rglob("*.tiff"))
+        + list(extract_dir.rglob("*.h5"))
+        + list(extract_dir.rglob("*.hdf5"))
+    )
+    return found
 
 
 def download_sar_data_asf(
@@ -803,8 +969,13 @@ def download_sar_data_asf(
         if should_use_nisar(start_date):
             logger.info("  Using NISAR-era search strategy")
             query_plan = [
+                (asf.DATASET.NISAR, asf.PRODUCT_TYPE.GCOV, exact_start, exact_end),
+                (asf.DATASET.NISAR, asf.PRODUCT_TYPE.GCOV, widened_start, widened_end),
                 (asf.DATASET.NISAR, asf.PRODUCT_TYPE.GSLC, exact_start, exact_end),
                 (asf.DATASET.NISAR, asf.PRODUCT_TYPE.GSLC, widened_start, widened_end),
+                # Sentinel-1 fallback for NISAR-era dates with no NISAR coverage
+                (asf.DATASET.SENTINEL1, asf.PRODUCT_TYPE.GRD_HD, exact_start, exact_end),
+                (asf.DATASET.SENTINEL1, asf.PRODUCT_TYPE.GRD_HD, widened_start, widened_end),
             ]
         else:
             logger.info("  Using Sentinel-era search strategy with fallbacks")
@@ -878,9 +1049,8 @@ def download_sar_data_asf(
         logger.info("  Download complete, processing SAR rasters...")
 
         # ================================================================
-        # Process downloaded RTC GeoTIFFs
-        # RTC products are ALREADY PROCESSED - just need to:
-        # 1. Open the GeoTIFFs
+        # Process downloaded SAR files (GeoTIFF or NISAR HDF5)
+        # 1. Open rasters (GeoTIFF) or extract bands from HDF5
         # 2. Reproject to target grid
         # 3. Stack into zarr
         # ================================================================
@@ -888,56 +1058,73 @@ def download_sar_data_asf(
         sar_by_time = {}
         detected_bands = set()
 
-        # Find downloaded GeoTIFFs directly or inside zip archives.
-        rtc_files = sorted(_find_raster_files(temp_dir))
+        sar_files = sorted(_find_raster_files(temp_dir))
 
-        if not rtc_files:
-            logger.warning("  No GeoTIFF files found in download payload")
+        if not sar_files:
+            logger.warning("  No raster/HDF5 files found in download payload")
             create_placeholder_sar(
                 grid_shape, grid_transform, target_crs, output_path, start_date
             )
             return True
 
-        for rtc_file in rtc_files:
-            logger.info(f"    Processing {rtc_file.name}...")
+        for sar_file in sar_files:
+            logger.info(f"    Processing {sar_file.name}...")
+            suffix = sar_file.suffix.lower()
 
-            # Open RTC GeoTIFF
-            sar_data = rioxarray.open_rasterio(rtc_file, masked=True)
+            if suffix in (".h5", ".hdf5"):
+                # ----------------------------------------------------------
+                # NISAR HDF5 (GCOV / GSLC)
+                # ----------------------------------------------------------
+                bands_extracted = _process_nisar_h5(
+                    sar_file, grid_shape, grid_transform, target_crs
+                )
+                if not bands_extracted:
+                    logger.warning(f"    Could not extract bands from {sar_file.name}")
+                    continue
 
-            # Reproject to target grid
-            sar_data = sar_data.rio.reproject(
-                target_crs,
-                shape=grid_shape,
-                transform=grid_transform,
-                resampling=rasterio.enums.Resampling.bilinear,
-            )
-
-            # Parse acquisition key + polarization for proper (time, band) stacking.
-            name_low = rtc_file.name.lower()
-            band_match = re.search(r"[-_](vv|vh|hh|hv)[-_]", name_low)
-            band_label = band_match.group(1).upper() if band_match else "B0"
-            detected_bands.add(band_label)
-
-            ts_match = re.search(r"(20\d{6}t\d{6})", name_low)
-            if ts_match:
-                acquisition_key = ts_match.group(1)
-                date_str = f"{acquisition_key[0:4]}-{acquisition_key[4:6]}-{acquisition_key[6:8]}"
-            else:
-                date_str = _extract_scene_date(rtc_file.name, start_date)
+                date_str = _extract_scene_date(sar_file.name, start_date)
                 acquisition_key = date_str
+                for b_label, arr in bands_extracted.items():
+                    detected_bands.add(b_label)
+                    if acquisition_key not in sar_by_time:
+                        sar_by_time[acquisition_key] = {"date": date_str, "bands": {}}
+                    sar_by_time[acquisition_key]["bands"][b_label] = arr
+            else:
+                # ----------------------------------------------------------
+                # Standard GeoTIFF (Sentinel-1 / OPERA RTC)
+                # ----------------------------------------------------------
+                sar_data = rioxarray.open_rasterio(sar_file, masked=True)
 
-            # For single-band files, extract first band.
-            arr = sar_data.values
-            if arr.ndim == 3:  # (band, y, x)
-                arr = arr[0]
-            arr = arr.astype(np.float32)
-            if Config.SAR_TO_DB:
-                # Sentinel/RTC rasters are typically positive-valued. Convert to dB.
-                arr = np.where(arr > 0, 10.0 * np.log10(arr + Config.SAR_DB_EPS), np.nan)
+                sar_data = sar_data.rio.reproject(
+                    target_crs,
+                    shape=grid_shape,
+                    transform=grid_transform,
+                    resampling=rasterio.enums.Resampling.bilinear,
+                )
 
-            if acquisition_key not in sar_by_time:
-                sar_by_time[acquisition_key] = {"date": date_str, "bands": {}}
-            sar_by_time[acquisition_key]["bands"][band_label] = arr
+                name_low = sar_file.name.lower()
+                band_match = re.search(r"[-_](vv|vh|hh|hv)[-_]", name_low)
+                band_label = band_match.group(1).upper() if band_match else "B0"
+                detected_bands.add(band_label)
+
+                ts_match = re.search(r"(20\d{6}t\d{6})", name_low)
+                if ts_match:
+                    acquisition_key = ts_match.group(1)
+                    date_str = f"{acquisition_key[0:4]}-{acquisition_key[4:6]}-{acquisition_key[6:8]}"
+                else:
+                    date_str = _extract_scene_date(sar_file.name, start_date)
+                    acquisition_key = date_str
+
+                arr = sar_data.values
+                if arr.ndim == 3:
+                    arr = arr[0]
+                arr = arr.astype(np.float32)
+                if Config.SAR_TO_DB:
+                    arr = np.where(arr > 0, 10.0 * np.log10(arr + Config.SAR_DB_EPS), np.nan)
+
+                if acquisition_key not in sar_by_time:
+                    sar_by_time[acquisition_key] = {"date": date_str, "bands": {}}
+                sar_by_time[acquisition_key]["bands"][band_label] = arr
 
         if not sar_by_time:
             logger.warning("  No raster data could be parsed from SAR files")
