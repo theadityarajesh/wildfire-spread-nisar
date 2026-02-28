@@ -107,6 +107,7 @@ class WildfireSpreadDataset(Dataset):
     - fire_dirs: list of paths to processed fire run directories.
     - sar_max_gap_days: maximum day-gap for nearest SAR match; beyond this SAR is treated missing.
     - include_sar_aux: include SAR reliability channels (availability + normalized age) for Family B.
+    - fire_oversample_frac: fraction of patches to center on a fire pixel when any exist (0 = off; 0.5 = half of patches contain fire). Helps when positives are very rare.
     """
 
     def __init__(
@@ -116,12 +117,14 @@ class WildfireSpreadDataset(Dataset):
         patch_size: Optional[int] = 128,
         sar_max_gap_days: int = 2,
         include_sar_aux: bool = True,
+        fire_oversample_frac: float = 0.0,
     ) -> None:
         self.fire_dirs = [Path(d) for d in fire_dirs]
         self.family = family.upper()
         self.patch_size = patch_size
         self.sar_max_gap_days = max(0, int(sar_max_gap_days))
         self.include_sar_aux = bool(include_sar_aux)
+        self.fire_oversample_frac = max(0.0, min(1.0, float(fire_oversample_frac)))
 
         # Build list of (fire_idx, day_idx) for which we have day_idx+1
         self.samples: List[Tuple[int, int]] = []
@@ -273,11 +276,34 @@ class WildfireSpreadDataset(Dataset):
         if self.patch_size is not None:
             ph, pw = self.patch_size, self.patch_size
 
-            # Handle each dimension independently:
-            # - if larger than patch: random crop
-            # - if smaller than patch: keep full extent, then pad
-            top = np.random.randint(0, h - ph + 1) if h > ph else 0
-            left = np.random.randint(0, w - pw + 1) if w > pw else 0
+            # With fire_oversample_frac, a fraction of patches are centered on a fire pixel so the model sees positives
+            use_fire_center = (
+                self.fire_oversample_frac > 0
+                and np.random.rand() < self.fire_oversample_frac
+                and h >= ph
+                and w >= pw
+            )
+            if use_fire_center:
+                pos_y, pos_x = np.where(label >= 0.5)
+                if len(pos_y) > 0:
+                    idx = np.random.randint(0, len(pos_y))
+                    py, px = int(pos_y[idx]), int(pos_x[idx])
+                    top_min = max(0, py - ph + 1)
+                    top_max = min(py, h - ph)
+                    left_min = max(0, px - pw + 1)
+                    left_max = min(px, w - pw)
+                    if top_max >= top_min and left_max >= left_min:
+                        top = np.random.randint(top_min, top_max + 1)
+                        left = np.random.randint(left_min, left_max + 1)
+                    else:
+                        top = np.random.randint(0, h - ph + 1)
+                        left = np.random.randint(0, w - pw + 1)
+                else:
+                    top = np.random.randint(0, h - ph + 1)
+                    left = np.random.randint(0, w - pw + 1)
+            else:
+                top = np.random.randint(0, h - ph + 1) if h > ph else 0
+                left = np.random.randint(0, w - pw + 1) if w > pw else 0
             bottom = min(top + ph, h)
             right = min(left + pw, w)
 

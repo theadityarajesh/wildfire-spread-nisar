@@ -344,6 +344,12 @@ def main() -> int:
     parser.add_argument("--val-frac", type=float, default=0.1)
     parser.add_argument("--test-frac", type=float, default=0.1)
     parser.add_argument("--sar-max-gap-days", type=int, default=2, help="Max day gap for nearest SAR match in Family B")
+    parser.add_argument(
+        "--fire-oversample-frac",
+        type=float,
+        default=0.0,
+        help="Fraction of training patches to center on a fire pixel when present (0=off, 0.5=half). Use for very rare positives (e.g. NISAR global).",
+    )
     parser.add_argument("--no-pos-weight", action="store_true", help="Disable class-weighted BCE loss")
     parser.add_argument("--pos-weight", type=float, default=None, help="Manual BCE positive-class weight (default: auto-estimate)")
     parser.add_argument("--pos-weight-samples", type=int, default=64, help="Samples used to auto-estimate pos_weight")
@@ -370,6 +376,7 @@ def main() -> int:
         family=args.family,
         patch_size=args.patch_size,
         sar_max_gap_days=args.sar_max_gap_days,
+        fire_oversample_frac=args.fire_oversample_frac,
     )
     val_ds = WildfireSpreadDataset(
         val_dirs,
