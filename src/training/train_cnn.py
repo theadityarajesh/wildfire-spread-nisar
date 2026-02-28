@@ -231,8 +231,8 @@ def estimate_pos_weight(dataset: WildfireSpreadDataset, max_samples: int = 64) -
     neg = max(total - pos, 0.0)
     if pos <= 0.0:
         return 1.0
-    # Clamp to avoid extreme instability from tiny positive rates.
-    return float(np.clip(neg / pos, 1.0, 50.0))
+    # Clamp to avoid extreme instability; allow high weight for very rare positives (e.g. NISAR global).
+    return float(np.clip(neg / pos, 1.0, 500.0))
 
 
 def train_one_epoch(

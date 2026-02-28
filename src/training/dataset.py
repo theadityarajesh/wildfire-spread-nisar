@@ -318,9 +318,21 @@ def train_val_test_split(
     dirs = list(fire_dirs)
     rng.shuffle(dirs)
     n = len(dirs)
-    n_train = int(n * train_frac)
-    n_val = int(n * val_frac)
-    n_test = n - n_train - n_val
+    if n < 3:
+        if n == 0:
+            return [], [], []
+        if n == 1:
+            return dirs, [], dirs
+        # n == 2: one train, one test, no val
+        return [dirs[0]], [], [dirs[1]]
+    # Ensure at least 1 fire in val and 1 in test when we have few fires
+    n_val = max(1, int(n * val_frac))
+    n_test = max(1, int(n * test_frac))
+    n_train = n - n_val - n_test
+    if n_train < 1:
+        n_train = 1
+        n_val = min(n_val, n - 2)
+        n_test = n - n_train - n_val
     train = dirs[:n_train]
     val = dirs[n_train : n_train + n_val]
     test = dirs[n_train + n_val :]
