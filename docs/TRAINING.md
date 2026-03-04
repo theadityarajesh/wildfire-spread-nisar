@@ -1,10 +1,6 @@
-# Training Family A and B Models
+# Training models (Families A and B)
 
-This describes how to train the next-day wildfire spread CNN (Family A: no SAR, Family B: + Sentinel-1 SAR) using data produced by the pipeline.
-
-## Branch
-
-Training code lives on the **model-training** branch (created from `cleanup/pipeline-reorg`). Data stays wherever your pipeline writes it (e.g. `processed/<fire_name>/`); it is not committed to git.
+This describes how to train the next-day wildfire spread CNN (Family A: no SAR, Family B: + Sentinel-1 SAR) using data produced by the pipeline. The training code lives under `src/training/` on the main branch; data stays wherever your pipeline writes it (e.g. `processed/<fire_name>/`) and is not committed to git.
 
 ## Test locally (no data required)
 
@@ -88,16 +84,16 @@ Fires are split **by event** into train/val/test (default 80/10/10). Outputs go 
 
 ## Running on the VM (data lives there)
 
-1. **Push the branch** from your laptop (after smoke test passes):
+1. **Push your changes** from your laptop (after smoke test passes), for example:
    ```bash
-   git push -u origin model-training
+   git push
    ```
 
-2. **On the VM**: clone or pull, then switch to the branch:
+2. **On the VM**: clone or pull, then check out the branch you pushed (e.g. `main`):
    ```bash
    cd /path/to/wildfire-spread-nisar
    git fetch origin
-   git checkout model-training
+   git checkout main
    ```
 
 3. **Install deps** on the VM (if not already):
