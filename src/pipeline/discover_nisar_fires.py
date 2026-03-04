@@ -3,16 +3,22 @@
 Discover global fires that overlap with available NISAR SAR coverage.
 
 Steps:
-1. Search ASF for all NISAR GSLC/GCOV scenes (the few that exist).
+1. Search ASF for all NISAR GSLC and GCOV scenes.
 2. For each scene footprint, query NASA FIRMS for active fire detections.
 3. Cluster fire detections into individual fire events.
 4. Output a manifest CSV ready for the data pipeline.
+
+If FIRMS returns no detections (e.g. missing MAP_KEY), a fallback manifest of
+known fire-prone regions is written so you can run the pipeline and filter
+by NISAR coverage afterward (see scripts/scan_nisar_coverage.py).
 
 Usage (on VM with .venv-train activated):
     python src/pipeline/discover_nisar_fires.py --output-csv configs/nisar_global_fires.csv
 
 Requires: asf_search, requests
-Auth: EARTHDATA_TOKEN in env / .env
+Auth: EARTHDATA_TOKEN in env / .env (for ASF).
+      For FIRMS fire-overlap: request a free MAP_KEY at
+      https://firms.modaps.eosdis.nasa.gov/api/map_key and set FIRMS_MAP_KEY in .env.
 """
 
 import argparse
@@ -36,7 +42,7 @@ except ImportError:
 
 
 def search_nisar_scenes():
-    """Search ASF for all available NISAR SAR products."""
+    """Search ASF for all available NISAR SAR products (GSLC and GCOV)."""
     try:
         import asf_search as asf
     except ImportError:
@@ -44,9 +50,11 @@ def search_nisar_scenes():
         return []
 
     scenes = []
+    seen = set()  # avoid duplicates when same scene appears as GSLC and GCOV
 
     datasets_products = [
         (asf.DATASET.NISAR, asf.PRODUCT_TYPE.GSLC),
+        (asf.DATASET.NISAR, asf.PRODUCT_TYPE.GCOV),
     ]
 
     for ds, prod in datasets_products:
@@ -61,9 +69,13 @@ def search_nisar_scenes():
             logger.info(f"  Found {len(results)} scenes")
             for r in results:
                 props = r.properties
+                scene_name = props.get("sceneName", "")
+                if scene_name in seen:
+                    continue
+                seen.add(scene_name)
                 geom = r.geometry
                 scenes.append({
-                    "scene_name": props.get("sceneName", ""),
+                    "scene_name": scene_name,
                     "start_date": props.get("startTime", ""),
                     "end_date": props.get("stopTime", ""),
                     "geometry": geom,
@@ -96,15 +108,15 @@ def query_firms_fires(bbox: tuple, start_date: str, end_date: str):
     """
     Query NASA FIRMS for active fire detections within a bounding box.
 
-    Uses the FIRMS Map Key API (free, just needs EARTHDATA_TOKEN or MAP_KEY).
-    Falls back to a direct VIIRS CSV download.
+    FIRMS area API requires a dedicated MAP_KEY (not Earthdata token).
+    Get a free key at https://firms.modaps.eosdis.nasa.gov/api/map_key
+    and set FIRMS_MAP_KEY in .env. If unset, EARTHDATA_TOKEN is tried
+    (may return empty for area/csv).
     """
     import requests
 
     west, south, east, north = bbox
-    map_key = os.getenv("FIRMS_MAP_KEY", "")
-    if not map_key:
-        map_key = os.getenv("EARTHDATA_TOKEN", "")
+    map_key = os.getenv("FIRMS_MAP_KEY", "").strip() or os.getenv("EARTHDATA_TOKEN", "").strip()
 
     fires = []
 
@@ -147,19 +159,36 @@ def query_firms_fires(bbox: tuple, start_date: str, end_date: str):
     return fires
 
 
+def _parse_acq_date(s: str) -> Optional[str]:
+    """Return YYYY-MM-DD if parseable, else None."""
+    if not s or not isinstance(s, str):
+        return None
+    s = s.strip()[:10]
+    if len(s) != 10:
+        return None
+    try:
+        datetime.strptime(s, "%Y-%m-%d")
+        return s
+    except ValueError:
+        return None
+
+
 def cluster_fires(detections: list, bbox: tuple, days_buffer: int = 3):
     """
     Cluster fire detections into fire events.
 
     Simple approach: group by date proximity and spatial proximity.
     Returns a list of fire event dicts with bounding boxes.
+    Skips detections with missing or invalid acq_date.
     """
     if not detections:
         return []
 
     by_date = {}
     for d in detections:
-        date = d.get("acq_date", "")
+        date = _parse_acq_date(d.get("acq_date", ""))
+        if date is None:
+            continue
         by_date.setdefault(date, []).append(d)
 
     dates_sorted = sorted(by_date.keys())
@@ -224,6 +253,12 @@ def main():
         default=5,
         help="Minimum fire detections to include (default: 5)",
     )
+    parser.add_argument(
+        "--max-scenes",
+        type=int,
+        default=0,
+        help="Max NISAR scenes to check with FIRMS (0 = all). Use e.g. 500 to test quickly.",
+    )
     args = parser.parse_args()
 
     logger.info("=" * 60)
@@ -242,6 +277,9 @@ def main():
         logger.error("No NISAR scenes found anywhere. Nothing to cross-reference.")
         return 1
 
+    if args.max_scenes > 0:
+        scenes = scenes[: args.max_scenes]
+        logger.info(f"Limited to first {len(scenes)} scenes (--max-scenes={args.max_scenes})")
     logger.info(f"\nFound {len(scenes)} NISAR scenes total")
 
     # Step 2: Check for fires in each scene footprint

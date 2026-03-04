@@ -86,9 +86,14 @@ def main() -> None:
         out_dir = output_root / name
 
         if args.skip_existing:
-            zarr_count = sum(1 for p in out_dir.glob("*.zarr") if p.is_dir())
-            if zarr_count >= 4:
-                print(f"[{i}/{len(rows)}] SKIP {name} (already has {zarr_count} zarr dirs)")
+            required = {"fire_masks.zarr", "weather.zarr", "satellite.zarr", "static.zarr"}
+            present = (
+                {p.name for p in out_dir.iterdir() if p.is_dir()}
+                if out_dir.exists()
+                else set()
+            )
+            if required.issubset(present):
+                print(f"[{i}/{len(rows)}] SKIP {name} (has all 4 required zarrs)")
                 results.append({"name": name, "status": "skipped", "seconds": 0})
                 continue
 

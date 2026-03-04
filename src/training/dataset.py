@@ -337,21 +337,24 @@ def train_val_test_split(
     val_frac: float = 0.1,
     test_frac: float = 0.1,
     seed: int = 42,
+    fire_fractions: Optional[dict] = None,
 ) -> Tuple[List[Path], List[Path], List[Path]]:
-    """Split fire directories by event (not by pixel) for train/val/test."""
+    """
+    Split fire directories by event (not by pixel) for train/val/test.
+
+    If fire_fractions is provided (run_dir -> float), uses stratified split:
+    sorts by fire fraction descending and assigns highest-fire runs to val/test
+    so they have positive pixels for meaningful metrics.
+    """
     assert abs(train_frac + val_frac + test_frac - 1.0) < 1e-6
-    rng = np.random.default_rng(seed)
     dirs = list(fire_dirs)
-    rng.shuffle(dirs)
     n = len(dirs)
     if n < 3:
         if n == 0:
             return [], [], []
         if n == 1:
             return dirs, [], dirs
-        # n == 2: one train, one test, no val
         return [dirs[0]], [], [dirs[1]]
-    # Ensure at least 1 fire in val and 1 in test when we have few fires
     n_val = max(1, int(n * val_frac))
     n_test = max(1, int(n * test_frac))
     n_train = n - n_val - n_test
@@ -359,7 +362,20 @@ def train_val_test_split(
         n_train = 1
         n_val = min(n_val, n - 2)
         n_test = n - n_train - n_val
-    train = dirs[:n_train]
-    val = dirs[n_train : n_train + n_val]
-    test = dirs[n_train + n_val :]
+
+    if fire_fractions is not None:
+        # Stratified: put highest-fire runs in val/test so they have positives
+        def frac(p: Path) -> float:
+            return fire_fractions.get(str(p), fire_fractions.get(p.name, 0.0))
+        dirs = sorted(dirs, key=frac, reverse=True)
+        # Assign HIGHEST-fire runs to val and test (first n_val, next n_test)
+        val = dirs[:n_val]
+        test = dirs[n_val : n_val + n_test]
+        train = dirs[n_val + n_test :]
+    else:
+        rng = np.random.default_rng(seed)
+        rng.shuffle(dirs)
+        train = dirs[:n_train]
+        val = dirs[n_train : n_train + n_val]
+        test = dirs[n_train + n_val :]
     return train, val, test

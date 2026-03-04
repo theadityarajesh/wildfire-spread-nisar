@@ -39,8 +39,9 @@ import numpy as np
 import xarray as xr
 import rioxarray
 import rasterio
-from rasterio.warp import transform_bounds
+from rasterio.warp import transform_bounds, reproject as rio_reproject
 from rasterio.transform import from_bounds
+from rasterio.enums import Resampling
 
 # Check for optional libraries
 LIBRARIES_AVAILABLE = {
@@ -766,11 +767,11 @@ def _process_nisar_h5(
                         if arr.ndim >= 2:
                             if arr.ndim > 2:
                                 arr = arr[0]
-                            arr = _reproject_array(arr, h5_path, grid_shape, grid_transform, target_crs)
-                            if Config.SAR_TO_DB:
-                                arr = np.where(arr > 0, 10.0 * np.log10(arr + Config.SAR_DB_EPS), np.nan)
-                            bands[band_label] = arr
-                            logger.info(f"    Extracted GCOV {h5_name} -> {band_label}")
+                    arr = _reproject_array_with_geoloc(arr, gcov_base, grid_shape, grid_transform, target_crs)
+                    if Config.SAR_TO_DB:
+                        arr = np.where(arr > 0, 10.0 * np.log10(arr + Config.SAR_DB_EPS), np.nan)
+                    bands[band_label] = arr
+                    logger.info(f"    Extracted GCOV {h5_name} -> {band_label}")
                 if bands:
                     return bands
 
@@ -796,7 +797,7 @@ def _process_nisar_h5(
                             arr = raw.astype(np.float32)
                         if arr.ndim > 2:
                             arr = arr[0]
-                        arr = _reproject_array(arr, h5_path, grid_shape, grid_transform, target_crs)
+                        arr = _reproject_array_with_geoloc(arr, gslc_base, grid_shape, grid_transform, target_crs)
                         if Config.SAR_TO_DB:
                             arr = np.where(arr > 0, 10.0 * np.log10(arr + Config.SAR_DB_EPS), np.nan)
                         bands[pol] = arr
@@ -826,6 +827,71 @@ def _reproject_array(
     arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
     if arr.shape == tuple(grid_shape):
         return arr
+    return resize_nearest_2d(arr, grid_shape)
+
+
+def _get_nisar_transform_crs(grid_group, arr_shape: Tuple[int, int]) -> Tuple[Optional[object], Optional[str]]:
+    """Extract geotransform and CRS from NISAR GCOV/GSLC grid group."""
+    try:
+        if "xCoordinates" not in grid_group or "yCoordinates" not in grid_group:
+            return None, None
+        xc = np.array(grid_group["xCoordinates"])
+        yc = np.array(grid_group["yCoordinates"])
+        h, w = int(yc.size), int(xc.size)
+        if (h, w) != arr_shape:
+            return None, None
+        minx, maxx = float(xc.min()), float(xc.max())
+        miny, maxy = float(yc.min()), float(yc.max())
+        if "yCoordinateSpacing" in grid_group:
+            y_spacing = float(np.array(grid_group["yCoordinateSpacing"]).ravel()[0])
+            if y_spacing < 0:
+                miny, maxy = maxy, miny
+        transform = from_bounds(minx, miny, maxx, maxy, w, h)
+        crs = None
+        if "projection" in grid_group:
+            proj = np.array(grid_group["projection"]).ravel()
+            if proj.size > 0:
+                val = proj.ravel()[0]
+                if hasattr(val, "decode"):
+                    crs = val.decode("utf-8").strip()
+                elif isinstance(val, (int, np.integer)):
+                    crs = f"EPSG:{int(val)}"
+                else:
+                    crs = str(val)
+        return transform, crs if crs else (None, None)
+    except Exception:
+        return None, None
+
+
+def _reproject_array_with_geoloc(
+    arr: np.ndarray,
+    grid_group,
+    grid_shape: Tuple[int, int],
+    grid_transform: object,
+    target_crs: str,
+) -> np.ndarray:
+    """Reproject NISAR 2D array using proper CRS reprojection when geolocation available."""
+    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+    if arr.shape == tuple(grid_shape):
+        return arr
+    src_transform, src_crs = _get_nisar_transform_crs(grid_group, arr.shape)
+    if src_transform is not None and src_crs is not None:
+        try:
+            out = np.zeros(grid_shape, dtype=np.float32)
+            rio_reproject(
+                source=arr,
+                destination=out,
+                src_transform=src_transform,
+                src_crs=src_crs,
+                dst_transform=grid_transform,
+                dst_crs=target_crs,
+                resampling=Resampling.nearest,
+                src_nodata=np.nan,
+                dst_nodata=np.nan,
+            )
+            return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
+        except Exception as e:
+            logger.warning("  NISAR reprojection failed, falling back to resize: %s", e)
     return resize_nearest_2d(arr, grid_shape)
 
 

@@ -354,8 +354,27 @@ def main() -> int:
     parser.add_argument("--pos-weight", type=float, default=None, help="Manual BCE positive-class weight (default: auto-estimate)")
     parser.add_argument("--pos-weight-samples", type=int, default=64, help="Samples used to auto-estimate pos_weight")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--init-from",
+        type=Path,
+        default=None,
+        help="Optional path to checkpoint (.pt) to initialize model/optimizer from "
+        "(e.g., a trained Family B run when fine-tuning on NISAR). "
+        "The checkpoint must have a compatible architecture.",
+    )
     parser.add_argument("--out-dir", type=Path, default=Path("experiments"), help="Base dir for run outputs")
     parser.add_argument("--run-name", type=str, default=None, help="Run name (default: family_A_YYYYMMDD_HHMMSS)")
+    parser.add_argument(
+        "--stratify-fire",
+        action="store_true",
+        help="Use fire_active_fraction from --summary-csv to put high-fire runs in val/test (fixes val_pos=0)",
+    )
+    parser.add_argument(
+        "--summary-csv",
+        type=Path,
+        default=None,
+        help="Summary CSV with run_dir, fire_active_fraction (required if --stratify-fire)",
+    )
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -366,8 +385,27 @@ def main() -> int:
         logger.error("No fire directories found. Use --data-root and optionally --fires-file.")
         return 1
 
+    fire_fractions = None
+    if args.stratify_fire:
+        if not args.summary_csv or not args.summary_csv.exists():
+            logger.error("--stratify-fire requires --summary-csv pointing to summarize_runs output")
+            return 1
+        import csv as csv_module
+        fire_fractions = {}
+        with args.summary_csv.open(newline="", encoding="utf-8") as f:
+            for row in csv_module.DictReader(f):
+                rd = row.get("run_dir", "").strip()
+                try:
+                    v = float(row.get("fire_active_fraction", "")) if row.get("fire_active_fraction") else 0.0
+                except (ValueError, TypeError):
+                    v = 0.0
+                fire_fractions[rd] = v
+                fire_fractions[Path(rd).name] = v  # also match by basename
+        logger.info("Stratified split using fire_active_fraction from %s", args.summary_csv)
+
     train_dirs, val_dirs, test_dirs = train_val_test_split(
-        fire_dirs, args.train_frac, args.val_frac, args.test_frac, args.seed
+        fire_dirs, args.train_frac, args.val_frac, args.test_frac, args.seed,
+        fire_fractions=fire_fractions,
     )
     logger.info("Fires: train=%d val=%d test=%d", len(train_dirs), len(val_dirs), len(test_dirs))
 
@@ -405,6 +443,24 @@ def main() -> int:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = build_spread_cnn(family=args.family).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+
+    if args.init_from is not None:
+        ckpt_path = Path(args.init_from)
+        if ckpt_path.is_file():
+            logger.info("Initializing model/optimizer from checkpoint: %s", ckpt_path)
+            ckpt = torch.load(ckpt_path, map_location=device)
+            # Load model weights (strict=True ensures architecture match).
+            model.load_state_dict(ckpt["model_state_dict"])
+            # Optional: also load optimizer state, but re-scale to current LR.
+            try:
+                optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+                for g in optimizer.param_groups:
+                    g["lr"] = args.lr
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning("Could not load optimizer state from %s: %s", ckpt_path, e)
+        else:
+            logger.error("init-from checkpoint not found: %s", ckpt_path)
+            return 1
     if args.no_pos_weight:
         criterion = nn.BCEWithLogitsLoss()
         logger.info("Loss: unweighted BCEWithLogitsLoss")

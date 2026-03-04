@@ -1,0 +1,8 @@
+overnight_01/ca_nisar_central_01
+overnight_01/ca_nisar_central_02
+overnight_01/ca_nisar_ie_01
+overnight_01/ca_nisar_la_01
+overnight_01/ca_nisar_norcal_02
+overnight_01/ca_nisar_norcal_03
+overnight_01/ca_nisar_sierra_01
+overnight_01/ca_nisar_sierra_02

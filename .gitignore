@@ -19,3 +19,10 @@ processed/
 data/
 cache/
 .matplotlib/
+
+# Training artifacts / experiment logs
+experiments/
+
+# Poster experiment bundles (large, reproducible)
+poster_assets/baseline_ab_*/
+poster_assets/baseline_ab_*.tar.gz

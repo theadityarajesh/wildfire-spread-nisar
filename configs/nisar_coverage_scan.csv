@@ -1,0 +1,5 @@
+name,start,end,west,south,east,north,note,scene_count_gslc,scene_count_gcov,scene_count_total
+india_mp_oct2025,2025-10-12,2025-10-22,76.7,21.4,79.8,24.2,Central India (MP/Maharashtra) - NISAR pass Oct 17. Post-monsoon crop burning season.,4,4,8
+east_africa_nov2025,2025-11-17,2025-11-27,40.1,11.4,43.0,14.2,Ethiopia/Djibouti - NISAR pass Nov 22. Dry season fires.,9,9,18
+east_africa_dec2025,2025-11-29,2025-12-09,40.1,11.4,43.0,14.2,Ethiopia/Djibouti - NISAR pass Dec 4. Dry season fires.,14,14,28
+us_midwest_nov2025,2025-10-29,2025-11-08,-92.0,39.1,-88.2,42.0,Illinois/Iowa - NISAR pass Nov 3. Late agricultural season.,16,16,32

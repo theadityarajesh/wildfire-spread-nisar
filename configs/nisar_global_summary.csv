@@ -1,0 +1,101 @@
+run_dir,status,errors,warnings,fire_timesteps,satellite_timesteps,fire_active_fraction,satellite_nonzero_fraction,notes
+processed/nisar_global/east_africa_dec2025,WARN,0,1,11,6,2.188119967324075e-05,0.02860463625437338,satellite has fewer timesteps (6) than fire (11); expected for sparse overpasses
+processed/nisar_global/east_africa_nov2025,WARN,0,1,11,4,2.9174932897654335e-05,0.05044778963414634,satellite has fewer timesteps (4) than fire (11); expected for sparse overpasses
+processed/nisar_global/nisar_fire_001,WARN,0,1,4,1,0.0029075029414426645,0.4253137538842128,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_002,WARN,0,1,4,1,0.00506774197892771,0.05009270191284673,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_003,WARN,0,1,4,1,0.006326531088149356,0.048076272826697825,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_004,WARN,0,1,4,1,0.006189543988945187,0.04797846614463381,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_005,WARN,0,1,4,1,0.004475409836065574,0.050438209331651954,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_006,WARN,0,1,4,1,0.001309102439944122,0.06854683201494648,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_007,WARN,0,3,4,1,0.0,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | fire masks appear to be all zero | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_008,FAIL,2,0,,,,,Missing required output: satellite.zarr | Missing required output: static.zarr
+processed/nisar_global/nisar_fire_009,WARN,0,2,4,1,0.0,0.47279056550156295,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | fire masks appear to be all zero
+processed/nisar_global/nisar_fire_010,WARN,0,2,4,1,0.0,0.1230003728494576,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | fire masks appear to be all zero
+processed/nisar_global/nisar_fire_011,FAIL,2,0,,,,,Missing required output: satellite.zarr | Missing required output: static.zarr
+processed/nisar_global/nisar_fire_012,FAIL,2,0,,,,,Missing required output: satellite.zarr | Missing required output: static.zarr
+processed/nisar_global/nisar_fire_013,WARN,0,2,4,1,0.003155155094213266,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_014,FAIL,2,0,,,,,Missing required output: satellite.zarr | Missing required output: static.zarr
+processed/nisar_global/nisar_fire_015,FAIL,2,0,,,,,Missing required output: satellite.zarr | Missing required output: static.zarr
+processed/nisar_global/nisar_fire_016,WARN,0,2,4,1,0.00034669323020430486,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_017,WARN,0,2,4,1,9.932301433429743e-05,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_018,FAIL,2,0,,,,,Missing required output: satellite.zarr | Missing required output: static.zarr
+processed/nisar_global/nisar_fire_019,WARN,0,2,4,1,0.007847850678733032,0.5017675339366516,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | static elevation has too many NaNs (finite=0.414)
+processed/nisar_global/nisar_fire_020,WARN,0,1,4,1,0.044653070562473446,0.44340131385429943,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_021,WARN,0,2,4,1,0.11419753086419752,0.38368894256575414,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | static elevation has too many NaNs (finite=0.558)
+processed/nisar_global/nisar_fire_022,WARN,0,1,4,1,6.536435961603108e-05,0.33198055446215907,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_023,WARN,0,2,4,1,0.0,0.12100557826438306,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | fire masks appear to be all zero
+processed/nisar_global/nisar_fire_024,WARN,0,1,4,1,0.0011353586538231709,0.11984308148289792,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_025,WARN,0,1,4,1,0.0003283980159026895,0.024274657892769013,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_026,WARN,0,2,4,1,6.63756482400971e-05,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_027,WARN,0,2,4,1,0.0003236648426638095,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_028,WARN,0,2,4,1,0.001239399869536856,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_029,WARN,0,2,4,1,0.0009480268750576114,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_030,WARN,0,1,4,1,0.0052537668517049965,0.15181954357212088,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_031,WARN,0,1,4,1,0.0011528872620368636,0.40691276006014226,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_032,WARN,0,1,4,1,0.0009124447601010101,0.07823350694444445,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_033,WARN,0,1,4,1,0.0006559925538656528,0.3929618187579214,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_034,WARN,0,1,4,1,0.000246454370733647,0.02769401550798595,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_035,WARN,0,2,4,1,0.0,0.4198197498251884,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | fire masks appear to be all zero
+processed/nisar_global/nisar_fire_036,WARN,0,1,4,1,0.001356669428334714,0.5001242750621375,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_037,FAIL,2,0,,,,,Missing required output: satellite.zarr | Missing required output: static.zarr
+processed/nisar_global/nisar_fire_038,WARN,0,2,4,1,0.0003824543836226079,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_039,WARN,0,2,4,1,0.00199203187250996,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_040,WARN,0,3,4,1,0.0,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | fire masks appear to be all zero | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_041,WARN,0,2,4,1,8.441057302720433e-05,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_042,WARN,0,2,4,1,0.0009838066259583813,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_043,WARN,0,2,4,1,0.0011157773386034256,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_044,WARN,0,2,4,1,0.00045602775626898566,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_045,WARN,0,1,4,1,0.0005913660555884093,0.04467031342400946,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_046,WARN,0,3,4,1,0.0032106324199208543,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty | static elevation has too many NaNs (finite=0.215)
+processed/nisar_global/nisar_fire_047,FAIL,1,0,,,,,Missing required output: static.zarr
+processed/nisar_global/nisar_fire_048,WARN,0,2,4,1,0.0008957175547564564,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_049,WARN,0,2,4,1,0.00030977579521268843,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_050,WARN,0,2,4,1,4.339901050256054e-05,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_051,WARN,0,2,4,1,0.00015788133435192257,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_052,WARN,0,2,4,1,9.276437847866419e-05,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_053,WARN,0,2,4,1,0.00028120664393241964,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_054,WARN,0,2,4,1,0.00020398212108898821,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_055,WARN,0,2,4,1,0.00018908698001080497,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_056,WARN,0,2,4,1,0.0002765649529042386,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_057,WARN,0,2,4,1,0.0001318192262574224,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_058,WARN,0,1,4,1,0.00013571894255917725,0.056949951420228975,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_059,WARN,0,1,4,1,2.7522101444072697e-05,0.07949340187533206,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_060,WARN,0,1,4,1,0.00012215170954910212,0.03363195833620749,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_061,WARN,0,1,4,1,5.322802197802198e-05,0.01757554945054945,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_062,WARN,0,1,4,1,0.0001761297465169444,0.20117611536857846,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_063,WARN,0,1,4,1,0.0009619573808541564,0.025077399977637863,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_064,WARN,0,2,4,1,0.0,0.49328990901571546,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | fire masks appear to be all zero
+processed/nisar_global/nisar_fire_065,FAIL,2,0,,,,,Missing required output: satellite.zarr | Missing required output: static.zarr
+processed/nisar_global/nisar_fire_066,FAIL,2,0,,,,,Missing required output: satellite.zarr | Missing required output: static.zarr
+processed/nisar_global/nisar_fire_067,FAIL,2,0,,,,,Missing required output: satellite.zarr | Missing required output: static.zarr
+processed/nisar_global/nisar_fire_068,WARN,0,3,4,2,0.0014454499748617396,0.001885369532428356,satellite has fewer timesteps (2) than fire (4); expected for sparse overpasses | satellite appears all zero/empty | static elevation has too many NaNs (finite=0.598)
+processed/nisar_global/nisar_fire_069,WARN,0,1,4,2,9.461414250151383e-05,0.06918045930610689,satellite has fewer timesteps (2) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_070,FAIL,2,0,,,,,Missing required output: satellite.zarr | Missing required output: static.zarr
+processed/nisar_global/nisar_fire_071,FAIL,2,0,,,,,Missing required output: satellite.zarr | Missing required output: static.zarr
+processed/nisar_global/nisar_fire_072,FAIL,2,0,,,,,Missing required output: satellite.zarr | Missing required output: static.zarr
+processed/nisar_global/nisar_fire_073,FAIL,2,0,,,,,Missing required output: satellite.zarr | Missing required output: static.zarr
+processed/nisar_global/nisar_fire_074,WARN,0,2,4,2,0.0,0.1573792369717784,satellite has fewer timesteps (2) than fire (4); expected for sparse overpasses | fire masks appear to be all zero
+processed/nisar_global/nisar_fire_075,WARN,0,1,4,1,8.644536652835408e-05,0.0135668375233911,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_076,WARN,0,1,4,1,8.619386057765008e-05,0.03506729169817027,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_077,WARN,0,2,4,1,0.002900094696969697,0.06439393939393939,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | static elevation has too many NaNs (finite=0.476)
+processed/nisar_global/nisar_fire_078,WARN,0,1,4,1,0.005869948382223341,0.40707655683105765,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_079,WARN,0,3,4,1,0.0,0.0,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | fire masks appear to be all zero | satellite appears all zero/empty
+processed/nisar_global/nisar_fire_080,WARN,0,1,4,1,0.02669341894060995,0.42473515248796145,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_081,WARN,0,1,4,1,0.0034622407839308635,0.06756793404566903,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_082,WARN,0,1,4,1,0.0021944216570959803,0.06825266611977031,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_083,WARN,0,1,4,1,0.0010024057738572574,0.035046015198380874,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_084,WARN,0,1,4,1,0.0006177241340857536,0.01799029835635493,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_085,WARN,0,1,4,1,0.000440928845731476,0.07104112451830603,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_086,FAIL,2,0,,,,,Missing required output: satellite.zarr | Missing required output: static.zarr
+processed/nisar_global/nisar_fire_087,FAIL,2,0,,,,,Missing required output: satellite.zarr | Missing required output: static.zarr
+processed/nisar_global/nisar_fire_088,FAIL,2,0,,,,,Missing required output: satellite.zarr | Missing required output: static.zarr
+processed/nisar_global/nisar_fire_089,WARN,0,2,4,1,0.005897435897435898,0.2692307692307692,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | static elevation has too many NaNs (finite=0.459)
+processed/nisar_global/nisar_fire_090,WARN,0,2,4,1,0.005897435897435898,0.2692307692307692,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | static elevation has too many NaNs (finite=0.459)
+processed/nisar_global/nisar_fire_091,WARN,0,2,4,1,0.0,0.4165761423042976,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | fire masks appear to be all zero
+processed/nisar_global/nisar_fire_092,WARN,0,2,4,1,0.0016513761467889909,0.03535168195718654,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses | static elevation has too many NaNs (finite=0.599)
+processed/nisar_global/nisar_fire_093,WARN,0,1,4,1,0.00022261329011892403,0.2936153242346745,satellite has fewer timesteps (1) than fire (4); expected for sparse overpasses
+processed/nisar_global/nisar_fire_094,FAIL,2,0,,,,,Missing required output: satellite.zarr | Missing required output: static.zarr
+processed/nisar_global/nisar_fire_095,FAIL,2,0,,,,,Missing required output: satellite.zarr | Missing required output: static.zarr
+processed/nisar_global/nisar_fire_096,FAIL,2,0,,,,,Missing required output: satellite.zarr | Missing required output: static.zarr
+processed/nisar_global/nisar_fire_097,FAIL,2,0,,,,,Missing required output: satellite.zarr | Missing required output: static.zarr
+processed/nisar_global/nisar_fire_098,FAIL,2,0,,,,,Missing required output: satellite.zarr | Missing required output: static.zarr
