@@ -235,6 +235,59 @@ def estimate_pos_weight(dataset: WildfireSpreadDataset, max_samples: int = 64) -
     return float(np.clip(neg / pos, 1.0, 500.0))
 
 
+class FocalLoss(nn.Module):
+    """Binary focal loss on logits.
+
+    gamma > 0 down-weights easy examples; alpha balances positive/negative classes.
+    """
+
+    def __init__(self, alpha: float = 0.75, gamma: float = 2.0) -> None:
+        super().__init__()
+        self.alpha = float(alpha)
+        self.gamma = float(gamma)
+        self.bce = nn.BCEWithLogitsLoss(reduction="none")
+
+    def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
+        bce_loss = self.bce(logits, target)
+        p_t = torch.sigmoid(logits)
+        pt = p_t * target + (1.0 - p_t) * (1.0 - target)
+        alpha_t = self.alpha * target + (1.0 - self.alpha) * (1.0 - target)
+        loss = alpha_t * (1.0 - pt) ** self.gamma * bce_loss
+        return loss.mean()
+
+
+def make_loss(
+    args: argparse.Namespace,
+    train_ds: WildfireSpreadDataset,
+    device: torch.device,
+) -> nn.Module:
+    """Construct loss function based on CLI args."""
+    loss_type = getattr(args, "loss", "bce").lower()
+    if loss_type == "focal":
+        alpha = float(getattr(args, "focal_alpha", 0.75))
+        gamma = float(getattr(args, "focal_gamma", 2.0))
+        logger.info("Loss: FocalLoss(alpha=%.3f, gamma=%.3f)", alpha, gamma)
+        return FocalLoss(alpha=alpha, gamma=gamma)
+
+    # Default: BCEWithLogitsLoss with optional pos_weight
+    if args.no_pos_weight:
+        logger.info("Loss: unweighted BCEWithLogitsLoss")
+        return nn.BCEWithLogitsLoss()
+
+    if args.pos_weight is None:
+        pos_weight_value = estimate_pos_weight(train_ds, max_samples=args.pos_weight_samples)
+        logger.info(
+            "Loss: auto-estimated pos_weight=%.3f from %d samples",
+            pos_weight_value,
+            args.pos_weight_samples,
+        )
+    else:
+        pos_weight_value = float(args.pos_weight)
+        logger.info("Loss: using manual pos_weight=%.3f", pos_weight_value)
+    pos_weight_tensor = torch.tensor([pos_weight_value], dtype=torch.float32, device=device)
+    return nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
+
+
 def train_one_epoch(
     model: nn.Module,
     loader: DataLoader,
@@ -344,6 +397,25 @@ def main() -> int:
     parser.add_argument("--val-frac", type=float, default=0.1)
     parser.add_argument("--test-frac", type=float, default=0.1)
     parser.add_argument("--sar-max-gap-days", type=int, default=2, help="Max day gap for nearest SAR match in Family B")
+    parser.add_argument(
+        "--loss",
+        type=str,
+        default="bce",
+        choices=["bce", "focal"],
+        help="Loss function: 'bce' (BCEWithLogits) or 'focal' (FocalLoss for extreme imbalance).",
+    )
+    parser.add_argument(
+        "--focal-gamma",
+        type=float,
+        default=2.0,
+        help="Focal loss gamma (only used when --loss focal).",
+    )
+    parser.add_argument(
+        "--focal-alpha",
+        type=float,
+        default=0.75,
+        help="Focal loss alpha (only used when --loss focal).",
+    )
     parser.add_argument(
         "--fire-oversample-frac",
         type=float,
@@ -461,18 +533,7 @@ def main() -> int:
         else:
             logger.error("init-from checkpoint not found: %s", ckpt_path)
             return 1
-    if args.no_pos_weight:
-        criterion = nn.BCEWithLogitsLoss()
-        logger.info("Loss: unweighted BCEWithLogitsLoss")
-    else:
-        if args.pos_weight is None:
-            pos_weight_value = estimate_pos_weight(train_ds, max_samples=args.pos_weight_samples)
-            logger.info("Loss: auto-estimated pos_weight=%.3f from %d samples", pos_weight_value, args.pos_weight_samples)
-        else:
-            pos_weight_value = float(args.pos_weight)
-            logger.info("Loss: using manual pos_weight=%.3f", pos_weight_value)
-        pos_weight_tensor = torch.tensor([pos_weight_value], dtype=torch.float32, device=device)
-        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
+    criterion = make_loss(args, train_ds, device)
 
     run_name = args.run_name or f"family_{args.family}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     out_dir = Path(args.out_dir) / run_name

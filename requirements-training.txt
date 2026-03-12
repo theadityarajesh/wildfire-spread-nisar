@@ -6,3 +6,4 @@
 #   pip install -r requirements.txt -r requirements-training.txt
 torch>=2.0
 scikit-learn
+optuna>=3.0
