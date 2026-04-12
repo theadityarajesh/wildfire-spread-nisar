@@ -1,0 +1,13 @@
+batch10_runs/bobcat_fire_2020_b10
+batch10_runs/caldor_fire_2021_b10
+batch10_runs/camp_fire_2018_b10
+batch10_runs/carr_fire_2018_b10
+batch10_runs/creek_fire_2020_b10
+batch10_runs/dixie_fire_2021_b10
+batch10_runs/kincade_fire_2019_b10
+batch10_runs/mendocino_complex_2018_b10
+batch10_runs/mosquito_fire_2022_b10
+batch10_runs/woolsey_fire_2018_b10
+camp_fire_2018_full_v3
+nisar_probe_ca
+nisar_probe_post_launch
